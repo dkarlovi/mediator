@@ -17,6 +17,9 @@ func TestFiles(t *testing.T) {
 		"S01/E03.mediator-tmp.mkv",
 		"S02/E01.MKV",
 		".hidden/x.mkv",
+		"#recycle/S01/E09.mkv",
+		"S01/@eaDir/E01.mkv/SYNOVIDEO_TRANSCODED.mp4",
+		"@eaDir/x.mkv",
 		"cover.jpg",
 	} {
 		p := filepath.Join(dir, f)

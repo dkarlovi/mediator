@@ -1,0 +1,131 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["*.*.*"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # Required for cosign signing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Fetch all history and tags for version info
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Get version for build
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Build the runner's own architecture first and load it, so the image
+      # that is about to be published can be exercised end to end.
+      - name: Build test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: mediator:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
+
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          # The bundled ffmpeg must be able to do everything the sample config asks.
+          docker run --rm mediator:test doctor --no-ansi -C /etc/mediator/mediator.yaml.dist
+
+          # A real conversion, as a non-root user the way a NAS runs it:
+          # E-AC3 5.1 in English and German -> AAC stereo, English only.
+          mkdir -p smoke
+          printf '%s\n' 'audio: {preferred: [aac], convert: {channels: 2}, languages: [eng]}' > smoke/mediator.yaml
+          run() { docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/smoke:/media" "$@"; }
+          run --entrypoint /usr/local/bin/ffmpeg mediator:test -v error \
+            -f lavfi -i testsrc=size=320x240:rate=25:duration=3 -f lavfi -i sine=duration=3 \
+            -map 0 -map 1 -map 1 -c:v libx264 -c:a eac3 -ac 6 \
+            -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger /media/Test.mkv
+          run -v "$PWD/smoke/mediator.yaml:/config/mediator.yaml:ro" mediator:test run --no-ansi /media --ack
+          run --entrypoint /usr/local/bin/ffprobe mediator:test -v error \
+            -show_entries stream=codec_name,channels:stream_tags=language -of csv=p=0 /media/Test-mediator.mkv | tee streams.txt
+          diff <(printf 'h264\naac,2,eng\n') streams.txt
+          # A second run must find nothing left to do.
+          run -v "$PWD/smoke/mediator.yaml:/config/mediator.yaml:ro" mediator:test run --no-ansi /media | tee second.txt
+          grep -q 'Would convert: 0' second.txt
+
+      - name: Build and push
+        id: build-and-push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
+
+      - name: Sign image with cosign
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          images=""
+          for tag in ${TAGS}; do
+            images+="${tag}@${DIGEST} "
+          done
+          cosign sign --yes ${images}

@@ -1,0 +1,9 @@
+.git
+.github
+dist/
+*.zip
+mediator
+mediator.exe
+mediator.yaml
+Dockerfile
+.dockerignore

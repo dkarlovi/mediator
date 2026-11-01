@@ -177,6 +177,54 @@ about the size of the source when the video is kept; mediator warns when it
 has less. Its temporary files are removed after every file, whether it
 succeeded or not.
 
+### Docker, and running on a NAS
+
+Converting audio is light work, and on a NAS it skips the network entirely:
+the file is read and written on the NAS's own disks. A 2-core Synology
+DS220+ converts two audio tracks of a Blu-ray remux at about 9x real time,
+several times faster than a desktop pulling the file over Wi-Fi.
+
+The image bundles a static ffmpeg build, so there is nothing else to install.
+It is built for `linux/amd64` and `linux/arm64`, and every image is
+smoke-tested (doctor plus a real conversion) before it is published:
+
+```bash
+docker run --rm \
+  --user 1026:100 \
+  -v /volume1/Movies:/media \
+  -v /volume1/docker/mediator/mediator.yaml:/config/mediator.yaml:ro \
+  ghcr.io/dkarlovi/mediator run /media          # dry run; add --ack to convert
+```
+
+- **`/media`** is where your files are mounted. Mount several shares as
+  subfolders (`-v /volume1/Shows:/media/Shows`) to process them together.
+- **`/config/mediator.yaml`** is your config. Don't set `workdir` here: the
+  disks are local, which is exactly the case it is not for.
+- **`--user`** makes new files belong to you, not root. Find your IDs with
+  `id` over SSH; on Synology they are typically `1026:100`.
+- **Check the setup** with `... ghcr.io/dkarlovi/mediator doctor`.
+- Recycle bins, snapshots and thumbnail folders (`#recycle`, `#snapshot`,
+  `@eaDir`, `@Recycle`) are always skipped.
+
+#### Synology
+
+1. Install **Container Manager** from Package Center.
+2. Put your `mediator.yaml` in a shared folder, e.g. `docker/mediator/`.
+3. Try a dry run over SSH: `sudo docker run --rm ...` as above.
+4. To convert new files automatically: **Control Panel → Task Scheduler →
+   Create → Scheduled Task → User-defined script**, user `root`, daily, with
+   the same `docker run` command plus `--ack`. Use the `--user` flag, or the
+   converted files will belong to root.
+
+Images are signed with cosign; to verify one:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp 'https://github.com/dkarlovi/mediator' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/dkarlovi/mediator:latest
+```
+
 ### Safety
 - The output goes to `<name>.mediator-tmp.<ext>` next to the source, on the
   same share, so the final swap is a rename, not a second network copy.

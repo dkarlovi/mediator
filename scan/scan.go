@@ -12,12 +12,23 @@ import (
 	"github.com/dkarlovi/mediator/media"
 )
 
+// nasDirs are folders NAS systems keep inside shares: Synology's recycle bin,
+// snapshots and thumbnail/index metadata, QNAP's recycle bin. Media in them
+// is deleted, a snapshot, or not media at all, and must never be converted.
+var nasDirs = map[string]bool{
+	"#recycle":           true,
+	"#snapshot":          true,
+	"@eaDir":             true,
+	"@Recycle":           true,
+	"@Recently-Snapshot": true,
+}
+
 // skip reports whether a name is something mediator must never touch: its own
-// in-progress output and macOS/NAS metadata.
+// in-progress output, hidden files and macOS/NAS metadata.
 func skip(name string) bool {
 	return strings.Contains(name, ".mediator-tmp.") ||
-		strings.HasPrefix(name, "._") ||
-		strings.HasPrefix(name, ".")
+		strings.HasPrefix(name, ".") ||
+		nasDirs[name]
 }
 
 // Files returns the media files at the given paths, sorted. A path can be a

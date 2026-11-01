@@ -54,7 +54,10 @@ Config lookup: `--config`, then `./mediator.yaml`, then
 - `commands/naming.go`: mediator's output naming (`-mediator` suffix or
   replace), derived from the `original` policy.
 - `scan/`: finding media files under the given paths, skipping mediator's
-  temp files and dotfiles.
+  temp files, dotfiles, and NAS recycle bin/snapshot/metadata folders.
+- `Dockerfile`: distroless image with mediator and a static ffmpeg build;
+  `.github/workflows/docker.yml` smoke-tests it (doctor plus a real
+  conversion as a non-root user) before pushing to ghcr.io.
 
 ## Behaviour that must be preserved
 - A stream in any codec of a `preferred` list is copied; any other stream is
