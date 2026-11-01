@@ -27,7 +27,7 @@ subtitles: {preferred: [srt, pgs]}
 	if want := []string{"subrip", "hdmv_pgs_subtitle"}; !reflect.DeepEqual(c.Subtitles.Preferred, want) {
 		t.Errorf("subtitles = %v", c.Subtitles.Preferred)
 	}
-	if c.Original != OriginalKeep || c.FFmpeg != "ffmpeg" || c.FFprobe != "ffprobe" {
+	if c.Original != OriginalKeep || c.FFmpeg != "ffmpeg" || c.FFprobe != "ffprobe" || c.WorkDir != "" {
 		t.Errorf("defaults not applied: %+v", c)
 	}
 }
@@ -95,5 +95,17 @@ func TestLoadPreferLookupOrder(t *testing.T) {
 	}
 	if _, got, _ := LoadPrefer(homeCfg); got != homeCfg {
 		t.Errorf("explicit config not preferred: %q", got)
+	}
+}
+
+func TestWorkDirIsExpandedAndAbsolute(t *testing.T) {
+	t.Setenv("MEDIATOR_TEST_WORK", "scratch")
+	c, err := Parse([]byte("workdir: ${MEDIATOR_TEST_WORK}/mediator\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(filepath.Join("scratch", "mediator"))
+	if c.WorkDir != want {
+		t.Errorf("workdir = %q, want %q", c.WorkDir, want)
 	}
 }

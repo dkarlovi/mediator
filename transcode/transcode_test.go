@@ -1,7 +1,9 @@
 package transcode
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,6 +150,56 @@ audio: {preferred: [aac]}
 		}
 		execute(t, p, filepath.Join(filepath.Dir(src), "Rip.mkv"), true)
 	})
+	t.Run("through a work directory", func(t *testing.T) {
+		// Force the cross-volume path: the work file must be copied, not
+		// renamed, into place.
+		renameFile = func(string, string) error { return errors.New("cross-device link") }
+		defer func() { renameFile = os.Rename }()
+
+		src, p := sample(t)
+		work := t.TempDir()
+		out := filepath.Join(filepath.Dir(src), "Episode.mkv")
+		var phases []string
+		res, err := Execute(context.Background(), p, out, Options{
+			FFmpeg: c.FFmpeg, FFprobe: c.FFprobe, WorkDir: work, RemoveSource: true,
+			Progress: func(st Status) {
+				if st.Done {
+					phases = append(phases, string(st.Phase))
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(phases, ","); got != "convert,upload" {
+			t.Errorf("finished phases = %q", got)
+		}
+		if res.Output != out || !res.Deleted || exists(src) || exists(TempPath(out)) {
+			t.Errorf("result %+v", res)
+		}
+		if left, _ := os.ReadDir(work); len(left) != 0 {
+			t.Errorf("work directory not cleaned up: %v", left)
+		}
+		info, err := media.Probe(context.Background(), c.FFprobe, out)
+		if err != nil || info.Streams[0].CodecName != "h264" {
+			t.Errorf("uploaded output: %v %+v", err, info)
+		}
+	})
+	t.Run("work directory is cleaned up on failure", func(t *testing.T) {
+		src, p := sample(t)
+		work := t.TempDir()
+		out := filepath.Join(filepath.Dir(src), "Episode.mkv")
+		_, err := Execute(context.Background(), p, out, Options{FFmpeg: "false", FFprobe: c.FFprobe, WorkDir: work})
+		if err == nil {
+			t.Fatal("expected ffmpeg failure")
+		}
+		if left, _ := os.ReadDir(work); len(left) != 0 {
+			t.Errorf("work directory not cleaned up: %v", left)
+		}
+		if !exists(src) || exists(out) || exists(TempPath(out)) {
+			t.Errorf("source must be untouched and no output left")
+		}
+	})
 	t.Run("into a new directory elsewhere", func(t *testing.T) {
 		// What a caller with its own target layout (fileferry) would do.
 		src, p := sample(t)
@@ -223,8 +275,8 @@ func TestReadProgress(t *testing.T) {
 		t.Errorf("ETA = %v", s.ETA)
 	}
 	// 25% of 1MB in 10s = 25kB/s.
-	if s.ReadRate != 25000 {
-		t.Errorf("ReadRate = %v", s.ReadRate)
+	if s.Rate != 25000 {
+		t.Errorf("Rate = %v", s.Rate)
 	}
 	if s := got[2]; !s.Done || s.Fraction != 1 || s.ETA != 0 {
 		t.Errorf("end: %+v", s)
@@ -235,5 +287,26 @@ func TestETAFallsBackToElapsed(t *testing.T) {
 	// No speed reported: 20% done in 10s -> 40s left.
 	if got := eta(Status{Fraction: 0.2, Elapsed: 10 * time.Second}, 100); got != 40*time.Second {
 		t.Errorf("eta = %v", got)
+	}
+}
+
+func TestCopyWithProgress(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), 9<<20) // spans several 4 MiB blocks
+	var dst bytes.Buffer
+	var last Status
+	if err := copyWithProgress(context.Background(), &dst, bytes.NewReader(data), int64(len(data)), func(st Status) { last = st }); err != nil {
+		t.Fatal(err)
+	}
+	if dst.Len() != len(data) {
+		t.Errorf("copied %d of %d bytes", dst.Len(), len(data))
+	}
+	if !last.Done || last.Phase != PhaseUpload || last.Fraction != 1 || last.Written != int64(len(data)) || last.ETA != 0 {
+		t.Errorf("final status %+v", last)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := copyWithProgress(ctx, &dst, bytes.NewReader(data), int64(len(data)), func(Status) {}); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled copy: err = %v", err)
 	}
 }

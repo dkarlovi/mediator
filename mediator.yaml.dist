@@ -28,8 +28,11 @@ audio:
 
 subtitles:
   # Text subtitles can be converted between each other. Bitmap ones (PGS,
-  # VobSub) are kept as-is when the container allows it, dropped otherwise.
-  preferred: [srt, ass]
+  # VobSub) can't be turned into text without OCR, so listing pgs accepts
+  # Blu-ray subtitles as-is instead of warning about them on every file.
+  # Unlisted bitmap subtitles are kept with a warning when the container
+  # allows it, dropped otherwise.
+  preferred: [srt, ass, pgs]
 
 # What happens to the source once the converted file is written and verified:
 #   keep   - leave it untouched; the converted file is written beside it as
@@ -37,6 +40,15 @@ subtitles:
 #   delete - replace it: the converted file takes its name and the source is
 #            removed
 original: keep
+
+# Local directory to convert in when your files are on a network share.
+# ffmpeg then only reads from the share; the finished file is uploaded in
+# one sequential copy afterwards, instead of reading and writing over the
+# network at the same time. Needs free space for one converted file (about
+# the size of the source). Environment variables like ${TEMP} are expanded.
+# Override per run with --workdir.
+# workdir: '${TEMP}\mediator'      # Windows
+# workdir: /var/tmp/mediator         # Linux
 
 # ffmpeg: /path/to/ffmpeg     # default: from PATH
 # ffprobe: /path/to/ffprobe

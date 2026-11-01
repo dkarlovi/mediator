@@ -71,8 +71,12 @@ type Config struct {
 	Audio     StreamConfig    `yaml:"audio"`
 	Subtitles StreamConfig    `yaml:"subtitles"`
 	Original  OriginalPolicy  `yaml:"original,omitempty"`
-	FFmpeg    string          `yaml:"ffmpeg,omitempty"`
-	FFprobe   string          `yaml:"ffprobe,omitempty"`
+	// WorkDir is a local directory ffmpeg writes into before the result is
+	// copied to its destination in one pass. Set it when files live on a
+	// network share. Empty means write next to the source.
+	WorkDir string `yaml:"workdir,omitempty"`
+	FFmpeg  string `yaml:"ffmpeg,omitempty"`
+	FFprobe string `yaml:"ffprobe,omitempty"`
 }
 
 var bitrateRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[kKmM]?$`)
@@ -112,6 +116,13 @@ func (c *Config) Normalize() error {
 	case OriginalKeep, OriginalDelete:
 	default:
 		return fmt.Errorf("original: unknown policy %q (want %q or %q)", c.Original, OriginalKeep, OriginalDelete)
+	}
+	if c.WorkDir != "" {
+		dir, err := filepath.Abs(os.ExpandEnv(c.WorkDir))
+		if err != nil {
+			return fmt.Errorf("workdir: %w", err)
+		}
+		c.WorkDir = dir
 	}
 	if c.FFmpeg == "" {
 		c.FFmpeg = "ffmpeg"

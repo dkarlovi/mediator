@@ -42,7 +42,9 @@ Config lookup: `--config`, then `./mediator.yaml`, then
   verification by re-probing, and installing the output. The caller passes
   the output path (`Execute(ctx, plan, out, opts)`) and whether to remove the
   source; `transcode` must not learn about mediator's naming or `original`
-  policy, so it stays reusable by other tools (e.g. fileferry).
+  policy, so it stays reusable by other tools (e.g. fileferry). With
+  `Options.WorkDir`, ffmpeg writes locally and the result is uploaded in a
+  separate phase; progress is reported per `Phase` (convert, upload).
 - `commands/naming.go`: mediator's output naming (`-mediator` suffix or
   replace), derived from the `original` policy.
 - `scan/`: finding media files under the given paths, skipping mediator's

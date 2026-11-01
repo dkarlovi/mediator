@@ -81,27 +81,42 @@ func Args(p *plan.Plan, out string) []string {
 	return append(args, "-f", p.Dst.Muxer, out)
 }
 
-// Status is a snapshot of a running conversion.
+// Phase is a step of Execute that reports progress.
+type Phase string
+
+const (
+	// PhaseConvert is ffmpeg reading the source and writing the output
+	// (into the work directory, when one is set).
+	PhaseConvert Phase = "convert"
+	// PhaseUpload is copying the output from the work directory to its
+	// destination.
+	PhaseUpload Phase = "upload"
+)
+
+// Status is a snapshot of a running phase.
 type Status struct {
-	// Fraction is how much of the file is done, 0..1.
+	Phase Phase
+	// Fraction is how much of the phase is done, 0..1.
 	Fraction float64
 	// Speed is ffmpeg's processing speed relative to playback (2.0 = twice
-	// real time), or 0 when ffmpeg hasn't reported one yet.
+	// real time), or 0 when ffmpeg hasn't reported one yet. Convert only.
 	Speed float64
-	// Elapsed is the wall-clock time since ffmpeg started.
+	// Elapsed is the wall-clock time since the phase started.
 	Elapsed time.Duration
 	// ETA is the estimated time left, or 0 when it can't be estimated yet.
 	ETA time.Duration
-	// ReadRate is source bytes processed per second, estimated from the
-	// fraction done and the source size: the share's effective throughput.
-	ReadRate float64
+	// Rate is bytes per second: the source being read during convert
+	// (estimated from the fraction done and the source size), the output
+	// being written during upload.
+	Rate float64
 	// Written is the output size so far, in bytes.
 	Written int64
-	// Done is set on the final update.
+	// Done is set on a phase's final update.
 	Done bool
 }
 
-// Progress receives a status update roughly twice a second.
+// Progress receives a status update roughly twice a second, and a final one
+// with Done set when each phase finishes.
 type Progress func(Status)
 
 // Options control a single execution.
@@ -112,7 +127,12 @@ type Options struct {
 	// different path. When the output path is the source itself, the source is
 	// always replaced.
 	RemoveSource bool
-	Progress     Progress
+	// WorkDir, when set, is a local directory ffmpeg writes into. The finished
+	// output is then copied to its destination in one sequential pass, so a
+	// network share never has to serve the read and the write at the same
+	// time.
+	WorkDir  string
+	Progress Progress
 }
 
 // Result describes what Execute did.
@@ -122,7 +142,7 @@ type Result struct {
 	Deleted bool
 	OldSize int64
 	NewSize int64
-	// Took is how long ffmpeg ran.
+	// Took is how long the whole execution ran, all phases included.
 	Took time.Duration
 }
 
@@ -151,42 +171,72 @@ func exists(path string) bool {
 
 // Execute runs ffmpeg for the plan, verifies the output and installs it at
 // out, creating out's directory if needed. On any failure the source is left
-// untouched and the temporary output is removed.
+// untouched and every temporary file is removed.
 func Execute(ctx context.Context, p *plan.Plan, out string, opts Options) (res Result, err error) {
+	started := time.Now()
 	if err := Preflight(p, out); err != nil {
 		return res, err
 	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return res, fmt.Errorf("creating output directory: %w", err)
 	}
+	progress := opts.Progress
+	if progress == nil {
+		progress = func(Status) {}
+	}
+
+	// tmp is the output's temporary name next to out; work is where ffmpeg
+	// writes, which is tmp itself unless a work directory is used.
 	tmp := TempPath(out)
+	work := tmp
+	if opts.WorkDir != "" {
+		if work, err = workFile(opts.WorkDir, out); err != nil {
+			return res, err
+		}
+	}
 	defer func() {
+		if work != tmp {
+			_ = os.Remove(work)
+		}
 		if err != nil {
 			_ = os.Remove(tmp)
 		}
 	}()
 
 	srcSize, _ := strconv.ParseInt(p.Info.Format.Size, 10, 64)
-	started := time.Now()
-	if err := run(ctx, opts.FFmpeg, Args(p, tmp), p.Info.Duration(), srcSize, opts.Progress); err != nil {
+	if err := run(ctx, opts.FFmpeg, Args(p, work), p.Info.Duration(), srcSize, progress); err != nil {
 		return res, err
 	}
-	res.Took = time.Since(started)
-	if err := verify(ctx, opts.FFprobe, p, tmp); err != nil {
+	if err := verify(ctx, opts.FFprobe, p, work); err != nil {
 		return res, fmt.Errorf("verifying output: %w", err)
 	}
-
 	if fi, err := os.Stat(p.Source); err == nil {
 		res.OldSize = fi.Size()
 	}
-	if fi, err := os.Stat(tmp); err == nil {
+	if fi, err := os.Stat(work); err == nil {
 		res.NewSize = fi.Size()
+	}
+
+	if work != tmp {
+		if err := upload(ctx, work, tmp, progress); err != nil {
+			return res, fmt.Errorf("uploading output: %w", err)
+		}
+		// The copy is checked by size and re-probed, which reads only the
+		// container headers; a full checksum would mean downloading the whole
+		// file again.
+		if fi, err := os.Stat(tmp); err != nil || fi.Size() != res.NewSize {
+			return res, fmt.Errorf("uploaded output is incomplete")
+		}
+		if err := verify(ctx, opts.FFprobe, p, tmp); err != nil {
+			return res, fmt.Errorf("verifying uploaded output: %w", err)
+		}
 	}
 
 	if err := os.Rename(tmp, out); err != nil {
 		return res, fmt.Errorf("installing output: %w", err)
 	}
 	res.Output = out
+	res.Took = time.Since(started)
 	// Remove the source only now that the output is in place, so there is
 	// never a moment with neither file.
 	if out != p.Source && opts.RemoveSource {
@@ -196,6 +246,103 @@ func Execute(ctx context.Context, p *plan.Plan, out string, opts Options) (res R
 		res.Deleted = true
 	}
 	return res, nil
+}
+
+// renameFile is os.Rename, replaceable in tests to force the copy path a
+// work directory on another volume takes.
+var renameFile = os.Rename
+
+// workFile reserves a unique file in the work directory for out, so two runs
+// (or two files with the same name from different folders) never collide.
+func workFile(dir, out string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("creating work directory: %w", err)
+	}
+	base := filepath.Base(out)
+	ext := filepath.Ext(base)
+	f, err := os.CreateTemp(dir, strings.TrimSuffix(base, ext)+".*"+TempMarker+strings.TrimPrefix(ext, "."))
+	if err != nil {
+		return "", fmt.Errorf("creating work file: %w", err)
+	}
+	name := f.Name()
+	return name, f.Close()
+}
+
+// upload moves src to dst. On the same volume that is a rename; otherwise it
+// is a sequential copy in large blocks, which is what network shares handle
+// best.
+func upload(ctx context.Context, src, dst string, progress Progress) error {
+	if err := renameFile(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	fi, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	outF, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if err := copyWithProgress(ctx, outF, in, fi.Size(), progress); err != nil {
+		outF.Close()
+		return err
+	}
+	// Write-behind errors on a network share only surface here.
+	if err := outF.Sync(); err != nil {
+		outF.Close()
+		return err
+	}
+	return outF.Close()
+}
+
+// copyWithProgress copies size bytes, reporting PhaseUpload progress at most
+// every 250ms and once more when done.
+func copyWithProgress(ctx context.Context, w io.Writer, r io.Reader, size int64, progress Progress) error {
+	buf := make([]byte, 4<<20)
+	start := time.Now()
+	var last time.Time
+	var written int64
+	report := func(done bool) {
+		st := Status{Phase: PhaseUpload, Written: written, Elapsed: time.Since(start), Done: done}
+		if size > 0 {
+			st.Fraction = math.Min(float64(written)/float64(size), 1)
+		}
+		if secs := st.Elapsed.Seconds(); secs > 0 {
+			st.Rate = float64(written) / secs
+			if st.Rate > 0 && !done {
+				st.ETA = time.Duration(float64(size-written) / st.Rate * float64(time.Second))
+			}
+		}
+		progress(st)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, rerr := r.Read(buf)
+		if n > 0 {
+			if _, err := w.Write(buf[:n]); err != nil {
+				return err
+			}
+			written += int64(n)
+			if time.Since(last) >= 250*time.Millisecond {
+				last = time.Now()
+				report(false)
+			}
+		}
+		if rerr == io.EOF {
+			report(true)
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
 }
 
 func run(ctx context.Context, ffmpeg string, args []string, duration float64, srcSize int64, progress Progress) error {
@@ -227,7 +374,7 @@ func run(ctx context.Context, ffmpeg string, args []string, duration float64, sr
 // readProgress consumes ffmpeg's -progress output: blocks of key=value lines,
 // each closed by a "progress=continue" (or "progress=end") line.
 func readProgress(r io.Reader, duration float64, srcSize int64, elapsed func() time.Duration, progress Progress) {
-	var st Status
+	st := Status{Phase: PhaseConvert}
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		key, val, ok := strings.Cut(sc.Text(), "=")
@@ -252,7 +399,7 @@ func readProgress(r io.Reader, duration float64, srcSize int64, elapsed func() t
 			st.Elapsed = elapsed()
 			st.ETA = eta(st, duration)
 			if secs := st.Elapsed.Seconds(); secs > 0 && srcSize > 0 {
-				st.ReadRate = st.Fraction * float64(srcSize) / secs
+				st.Rate = st.Fraction * float64(srcSize) / secs
 			}
 			progress(st)
 		}

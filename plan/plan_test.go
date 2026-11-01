@@ -199,3 +199,25 @@ func hasOpt(s StreamPlan, name, value string) bool {
 	}
 	return false
 }
+
+func TestListedBitmapSubtitlesAreKeptQuietly(t *testing.T) {
+	streams := []media.Stream{video(0, "h264"), sub(1, "hdmv_pgs_subtitle"), sub(2, "mov_text")}
+
+	// Not listed: kept, but with a warning.
+	p, err := Build(&media.Info{Path: "/x/a.mkv", Streams: streams}, cfg(t, `subtitles: {preferred: [srt, ass]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(p); got != "copy copy convert:subrip" || len(p.Warnings) != 1 {
+		t.Errorf("unlisted: actions = %q, warnings = %v", got, p.Warnings)
+	}
+
+	// Listed: kept silently, while other text subtitles still become srt.
+	p, err = Build(&media.Info{Path: "/x/a.mkv", Streams: streams}, cfg(t, `subtitles: {preferred: [srt, ass, pgs]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(p); got != "copy copy convert:subrip" || len(p.Warnings) != 0 {
+		t.Errorf("listed: actions = %q, warnings = %v", got, p.Warnings)
+	}
+}

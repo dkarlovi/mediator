@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ Paths can be files or directories, local or on a network share:
 		&console.BoolFlag{Name: "ack", Usage: "Actually convert files (default is a dry run)"},
 		&console.BoolFlag{Name: "no-recurse", Usage: "Do not descend into subdirectories"},
 		&console.BoolFlag{Name: "show-ok", Usage: "Also list files that already match the config"},
+		&console.StringFlag{Name: "workdir", Usage: "Local directory to convert in before uploading the result (overrides <info>workdir</> from the config)"},
 	},
 	Action: func(c *console.Context) error {
 		cfg, err := loadConfig(c)
@@ -71,7 +73,21 @@ Paths can be files or directories, local or on a network share:
 			return console.Exit(fmt.Sprintf("Scanning failed: %v", err), 1)
 		}
 		ack := c.Bool("ack")
-		fmt.Fprintf(c.App.Writer, "Found <info>%d</> media files\n\n", len(files))
+		workDir := cfg.WorkDir
+		if wd := c.String("workdir"); wd != "" {
+			if workDir, err = filepath.Abs(wd); err != nil {
+				return console.Exit(fmt.Sprintf("Invalid --workdir: %v", err), 1)
+			}
+		}
+		fmt.Fprintf(c.App.Writer, "Found <info>%d</> media files\n", len(files))
+		if workDir != "" {
+			note := ""
+			if free, err := transcode.FreeSpace(workDir); err == nil {
+				note = fmt.Sprintf(" (%s free)", humanSize(int64(free)))
+			}
+			fmt.Fprintf(c.App.Writer, "Converting in <comment>%s</>%s, then uploading\n", workDir, note)
+		}
+		fmt.Fprintln(c.App.Writer)
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
@@ -131,19 +147,19 @@ Paths can be files or directories, local or on a network share:
 				continue
 			}
 			todo++
+			if workDir != "" {
+				warnWorkDirSpace(c.App.Writer, workDir, info)
+			}
 			if !ack {
 				continue
-			}
-			var progress transcode.Progress
-			if interactive {
-				progress = progressPrinter(c.App.Writer, n+1, len(files))
 			}
 
 			res, err := transcode.Execute(ctx, p, out, transcode.Options{
 				FFmpeg:       cfg.FFmpeg,
 				FFprobe:      cfg.FFprobe,
 				RemoveSource: cfg.Original == config.OriginalDelete,
-				Progress:     progress,
+				WorkDir:      workDir,
+				Progress:     progressPrinter(c.App.Writer, interactive, n+1, len(files)),
 			})
 			if interactive {
 				fmt.Fprint(c.App.Writer, "\r\033[K")
@@ -283,25 +299,42 @@ func channels(n int) string {
 	return fmt.Sprintf("%dch", n)
 }
 
-// progressPrinter redraws a single status line in place:
+// progressPrinter shows each phase of a conversion. In a terminal the
+// current phase is redrawn in place; every phase that finishes leaves a
+// summary line, so the steps stay visible:
 //
-//	[███████████░░░░░░░░░░░░░]  46%  3.1x  12.4 MB/s  elapsed 0:41  ETA 0:48  (2/9)
-func progressPrinter(w io.Writer, n, total int) transcode.Progress {
+//	convert [████████████████████] 100%  30.2x  read 95.1 MB/s  took 4:12
+//	upload  [████████░░░░░░░░░░░░]  41%  write 18.2 MB/s  elapsed 14:02  ETA 20:11  (2/9)
+func progressPrinter(w io.Writer, interactive bool, n, total int) transcode.Progress {
 	return func(st transcode.Status) {
-		fmt.Fprintf(w, "\r    %s\033[K", statusLine(st, n, total))
+		switch {
+		case st.Done && interactive:
+			fmt.Fprintf(w, "\r    %s\033[K\n", statusLine(st, n, total))
+		case st.Done:
+			fmt.Fprintf(w, "    %s\n", statusLine(st, n, total))
+		case interactive:
+			fmt.Fprintf(w, "\r    %s\033[K", statusLine(st, n, total))
+		}
 	}
 }
 
 func statusLine(st transcode.Status, n, total int) string {
-	const width = 24
+	const width = 20
 	filled := int(st.Fraction * width)
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	line := fmt.Sprintf("[%s] %3d%%", bar, int(st.Fraction*100))
+	line := fmt.Sprintf("%-7s [%s] %3d%%", st.Phase, bar, int(st.Fraction*100))
 	if st.Speed > 0 {
 		line += fmt.Sprintf("  %.1fx", st.Speed)
 	}
-	if st.ReadRate > 0 {
-		line += fmt.Sprintf("  %.1f MB/s", st.ReadRate/1e6)
+	if st.Rate > 0 {
+		dir := "read"
+		if st.Phase == transcode.PhaseUpload {
+			dir = "write"
+		}
+		line += fmt.Sprintf("  %s %.1f MB/s", dir, st.Rate/1e6)
+	}
+	if st.Done {
+		return line + "  took " + clock(st.Elapsed)
 	}
 	line += "  elapsed " + clock(st.Elapsed)
 	if st.ETA > 0 {
@@ -311,6 +344,18 @@ func statusLine(st transcode.Status, n, total int) string {
 		line += fmt.Sprintf("  (%d/%d)", n, total)
 	}
 	return line
+}
+
+// warnWorkDirSpace warns when the work directory may be too small. The output
+// size isn't known up front; the source size is a safe upper bound for the
+// usual case of converting audio and keeping the video.
+func warnWorkDirSpace(w io.Writer, dir string, info *media.Info) {
+	need, _ := strconv.ParseInt(info.Format.Size, 10, 64)
+	free, err := transcode.FreeSpace(dir)
+	if err != nil || need <= 0 || int64(free) >= need {
+		return
+	}
+	fmt.Fprintf(w, "    <fg=yellow>! work directory has %s free; the output may need up to %s</>\n", humanSize(int64(free)), humanSize(need))
 }
 
 // clock formats a duration as m:ss, or h:mm:ss from an hour up.

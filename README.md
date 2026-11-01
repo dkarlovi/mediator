@@ -121,8 +121,39 @@ becomes AAC. Leave a list out and that kind of stream is never touched.
 - **Names** follow `ffprobe`, with common aliases accepted: `srt`=`subrip`,
   `h265`=`hevc`, `pgs`=`hdmv_pgs_subtitle`, `vobsub`=`dvd_subtitle`.
 - **Unknown keys are an error**, so a typo can't silently switch a policy off.
+- `workdir:` is a local folder to convert in; see "Network shares" below.
 - `paths:` sets the folders to scan when none are given on the command line.
 - `ffmpeg:` / `ffprobe:` point to the binaries when they aren't on `PATH`.
+
+### Network shares (`workdir`)
+
+Without a work folder, ffmpeg reads the source from the share and writes the
+new file back to it at the same time. Over Wi-Fi (half-duplex) or with a hard
+disk in the NAS, the two compete, and both run well below what a plain copy
+achieves.
+
+```yaml
+workdir: '${TEMP}\mediator'    # or /var/tmp/mediator, or --workdir per run
+```
+
+With a work folder, every file goes through two steps, each with its own
+progress bar and a summary line when it finishes:
+
+```
+    convert [████████████████████] 100%  1.9x  read 17.8 MB/s  took 1:02:13
+    upload  [████████░░░░░░░░░░░░]  41%  write 18.2 MB/s  elapsed 14:02  ETA 20:11
+```
+
+1. **convert**: ffmpeg reads from the share and writes into the work folder.
+   The `read` rate is your download speed from the share.
+2. **upload**: the finished file is copied back in one sequential pass with
+   large blocks, then checked (size, and a re-probe of streams, codecs and
+   duration) before it is moved into place.
+
+The work folder needs free space for one converted file, which is at most
+about the size of the source when the video is kept; mediator warns when it
+has less. Its temporary files are removed after every file, whether it
+succeeded or not.
 
 ### Safety
 - The output goes to `<name>.mediator-tmp.<ext>` next to the source, on the
