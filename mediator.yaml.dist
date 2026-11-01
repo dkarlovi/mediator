@@ -1,0 +1,42 @@
+# mediator.yaml: copy to ./mediator.yaml or <user config dir>/mediator/mediator.yaml
+#
+# Every "preferred" list is ordered: a stream already in ANY listed codec is
+# left alone; anything else is converted to the FIRST codec the target
+# container can hold. Omit a section (or leave its list empty) to never touch
+# that kind of stream.
+
+# Scanned when no paths are given on the command line.
+# paths:
+#   - '\\NAS\Shows'
+#   - /mnt/media/Shows
+
+container:
+  preferred: [mkv, mp4]
+
+video:
+  # Converting video is slow and lossy; keep this list broad.
+  preferred: [h264, hevc]
+  convert:
+    crf: 20
+    preset: medium
+
+audio:
+  preferred: [aac, mp3]
+  convert:
+    bitrate: 192k     # default: 64k per output channel
+    channels: 2       # downmix surround to stereo; omit to keep the source layout
+
+subtitles:
+  # Text subtitles can be converted between each other. Bitmap ones (PGS,
+  # VobSub) are kept as-is when the container allows it, dropped otherwise.
+  preferred: [srt, ass]
+
+# What happens to the source once the converted file is written and verified:
+#   keep   - leave it untouched; the converted file is written beside it as
+#            "<name>-mediator.<ext>" (default)
+#   delete - replace it: the converted file takes its name and the source is
+#            removed
+original: keep
+
+# ffmpeg: /path/to/ffmpeg     # default: from PATH
+# ffprobe: /path/to/ffprobe

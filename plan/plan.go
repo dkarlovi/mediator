@@ -1,0 +1,293 @@
+// Package plan decides, for one media file, what has to happen to it so it
+// matches the configuration. It is pure: it only looks at ffprobe output and
+// the config, and never touches the file.
+package plan
+
+import (
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/dkarlovi/mediator/config"
+	"github.com/dkarlovi/mediator/media"
+)
+
+// Suffix marks the converted copy written beside a kept original:
+// "Episode.mkv" -> "Episode-mediator.mkv".
+const Suffix = "-mediator"
+
+// OutputPath is where the converted version of src goes.
+func OutputPath(src string, dst media.Container, policy config.OriginalPolicy) string {
+	stem := strings.TrimSuffix(src, filepath.Ext(src))
+	// A file mediator produced itself is never an original worth keeping, so
+	// it is converted in place instead of growing a second suffix.
+	if policy == config.OriginalKeep && !strings.HasSuffix(stem, Suffix) {
+		stem += Suffix
+	}
+	return stem + "." + dst.Ext
+}
+
+// Action is what happens to a single stream.
+type Action string
+
+const (
+	Copy    Action = "copy"
+	Convert Action = "convert"
+	Drop    Action = "drop"
+)
+
+// Option is one encoder option, written without a stream specifier; the
+// ffmpeg command builder adds the output stream index.
+type Option struct {
+	Name  string
+	Value string
+}
+
+// StreamPlan is the decision for one input stream.
+type StreamPlan struct {
+	Stream media.Stream
+	Action Action
+	// Codec is the output codec when converting.
+	Codec string
+	// Encoder is the ffmpeg encoder when converting.
+	Encoder string
+	// Options are the encoder options when converting.
+	Options []Option
+	// Channels is the output channel count of converted audio.
+	Channels int
+	// Reason explains a convert or drop decision.
+	Reason string
+}
+
+// Plan is everything that will happen to one file.
+type Plan struct {
+	Info     *media.Info
+	Source   string
+	Output   string
+	Src      media.Container
+	Dst      media.Container
+	Streams  []StreamPlan
+	Warnings []string
+}
+
+// NeedsWork reports whether the file has to be rewritten at all.
+func (p *Plan) NeedsWork() bool {
+	if p.Src.Name != p.Dst.Name {
+		return true
+	}
+	for _, s := range p.Streams {
+		if s.Action != Copy {
+			return true
+		}
+	}
+	return false
+}
+
+// Kept returns the streams that end up in the output, in output order.
+func (p *Plan) Kept() []StreamPlan {
+	var kept []StreamPlan
+	for _, s := range p.Streams {
+		if s.Action != Drop {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
+// maxChannels caps encoders that cannot produce more channels than this.
+var maxChannels = map[string]int{"mp3": 2, "ac3": 6, "eac3": 6, "aac": 8, "opus": 8}
+
+// Build decides what has to happen to a probed file.
+func Build(info *media.Info, cfg *config.Config) (*Plan, error) {
+	src, ok := media.ContainerOf(info.Path)
+	if !ok {
+		return nil, fmt.Errorf("unsupported container %q", filepath.Ext(info.Path))
+	}
+	dst := src
+	if prefs := cfg.Container.Preferred; len(prefs) > 0 && !slices.Contains(prefs, src.Name) {
+		dst, _ = media.LookupContainer(prefs[0])
+	}
+
+	p := &Plan{
+		Info:   info,
+		Source: info.Path,
+		Output: OutputPath(info.Path, dst, cfg.Original),
+		Src:    src,
+		Dst:    dst,
+	}
+
+	for _, s := range info.Streams {
+		sp, err := p.planStream(s, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("stream #%d (%s %s): %w", s.Index, s.CodecType, s.CodecName, err)
+		}
+		p.Streams = append(p.Streams, sp)
+	}
+
+	if len(p.Kept()) == 0 {
+		return nil, fmt.Errorf("no streams would be left in the output")
+	}
+	return p, nil
+}
+
+func (p *Plan) warnf(format string, args ...any) {
+	p.Warnings = append(p.Warnings, fmt.Sprintf(format, args...))
+}
+
+func (p *Plan) planStream(s media.Stream, cfg *config.Config) (StreamPlan, error) {
+	dst := p.Dst
+	switch s.CodecType {
+	case "video":
+		if s.IsCoverArt() {
+			if dst.Allows("video", s.CodecName) {
+				return StreamPlan{Stream: s, Action: Copy}, nil
+			}
+			return StreamPlan{Stream: s, Action: Drop, Reason: fmt.Sprintf("%s cannot hold %s cover art", dst.Name, s.CodecName)}, nil
+		}
+		return p.choose(s, cfg.Video)
+	case "audio":
+		return p.choose(s, cfg.Audio)
+	case "subtitle":
+		return p.choose(s, cfg.Subtitles)
+	case "attachment":
+		if dst.Attachments {
+			return StreamPlan{Stream: s, Action: Copy}, nil
+		}
+		return StreamPlan{Stream: s, Action: Drop, Reason: fmt.Sprintf("%s cannot hold attachments", dst.Name)}, nil
+	case "data":
+		if dst.Data && p.Src.Muxer == dst.Muxer {
+			return StreamPlan{Stream: s, Action: Copy}, nil
+		}
+		return StreamPlan{Stream: s, Action: Drop, Reason: "data stream cannot be carried over to " + dst.Name}, nil
+	}
+	return StreamPlan{Stream: s, Action: Drop, Reason: fmt.Sprintf("unknown stream type %q", s.CodecType)}, nil
+}
+
+// choose picks copy or convert for a video, audio or subtitle stream.
+func (p *Plan) choose(s media.Stream, cfg config.StreamConfig) (StreamPlan, error) {
+	dst := p.Dst
+	codec := s.CodecName
+	kind := s.CodecType
+	prefs := cfg.Preferred
+	fits := dst.Allows(kind, codec)
+
+	if fits && (len(prefs) == 0 || slices.Contains(prefs, codec)) {
+		return StreamPlan{Stream: s, Action: Copy}, nil
+	}
+
+	reason := fmt.Sprintf("%s is not in preferred %v", codec, prefs)
+	if !fits {
+		reason = fmt.Sprintf("%s cannot hold %s", dst.Name, codec)
+	}
+
+	convertible := func(target string) bool {
+		if _, ok := media.Encoder(target); !ok || !dst.Allows(kind, target) {
+			return false
+		}
+		// Bitmap subtitles can only be copied; text ones only become text.
+		return kind != "subtitle" || (media.IsTextSubtitle(codec) && media.IsTextSubtitle(target))
+	}
+
+	for _, target := range prefs {
+		if convertible(target) {
+			return p.convert(s, target, cfg.Convert, reason), nil
+		}
+	}
+
+	// A text subtitle the container can't hold is still worth converting to
+	// whatever text format it can (srt in mkv -> mov_text in mp4).
+	if kind == "subtitle" && !fits && media.IsTextSubtitle(codec) {
+		for _, target := range dst.Subtitles {
+			if convertible(target) {
+				return p.convert(s, target, cfg.Convert, reason), nil
+			}
+		}
+	}
+
+	if fits {
+		p.warnf("stream #%d: %s is not preferred, but cannot be converted to any of %v; keeping it", s.Index, codec, prefs)
+		return StreamPlan{Stream: s, Action: Copy}, nil
+	}
+	if kind == "subtitle" {
+		return StreamPlan{Stream: s, Action: Drop, Reason: reason + " and it cannot be converted"}, nil
+	}
+	return StreamPlan{}, fmt.Errorf("%s, and none of %v can be produced for it", reason, prefs)
+}
+
+func (p *Plan) convert(s media.Stream, target string, cc config.ConvertConfig, reason string) StreamPlan {
+	enc, _ := media.Encoder(target)
+	sp := StreamPlan{Stream: s, Action: Convert, Codec: target, Encoder: enc, Reason: reason}
+
+	switch s.CodecType {
+	case "audio":
+		ch := s.Channels
+		if cc.Channels > 0 && ch > cc.Channels {
+			ch = cc.Channels
+		}
+		if m, ok := maxChannels[target]; ok && ch > m {
+			ch = m
+		}
+		if ch > 0 && ch != s.Channels {
+			sp.Channels = ch
+			sp.Options = append(sp.Options, Option{"ac", strconv.Itoa(ch)})
+		} else {
+			sp.Channels = s.Channels
+		}
+		if target != "flac" && target != "alac" {
+			br := cc.Bitrate
+			if br == "" && sp.Channels > 0 {
+				br = strconv.Itoa(64*sp.Channels) + "k"
+			}
+			if br != "" {
+				sp.Options = append(sp.Options, Option{"b", br})
+			}
+		}
+	case "video":
+		sp.Options = videoOptions(enc, cc)
+		if enc == "libx264" && strings.Contains(s.PixFmt, "10") {
+			// 10-bit H.264 barely plays anywhere; it defeats the point.
+			sp.Options = append(sp.Options, Option{"pix_fmt", "yuv420p"})
+		}
+		if s.IsHDR() {
+			p.warnf("stream #%d is HDR (%s); converting it to %s will lose the HDR", s.Index, s.ColorTransfer, target)
+		}
+		p.warnf("stream #%d: converting video (%s -> %s) is slow and lossy", s.Index, s.CodecName, target)
+	}
+	return sp
+}
+
+func videoOptions(enc string, cc config.ConvertConfig) []Option {
+	type defaults struct {
+		crf    int
+		preset string
+	}
+	d := map[string]defaults{
+		"libx264":    {20, "medium"},
+		"libx265":    {22, "medium"},
+		"libsvtav1":  {30, "6"},
+		"libvpx-vp9": {31, ""},
+	}[enc]
+	crf, preset := d.crf, d.preset
+	if cc.CRF > 0 {
+		crf = cc.CRF
+	}
+	if cc.Preset != "" {
+		preset = cc.Preset
+	}
+	var opts []Option
+	if preset != "" {
+		opts = append(opts, Option{"preset", preset})
+	}
+	if cc.Bitrate != "" {
+		return append(opts, Option{"b", cc.Bitrate})
+	}
+	if crf > 0 {
+		opts = append(opts, Option{"crf", strconv.Itoa(crf)})
+	}
+	if enc == "libvpx-vp9" {
+		opts = append(opts, Option{"b", "0"})
+	}
+	return opts
+}
