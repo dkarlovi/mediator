@@ -86,18 +86,25 @@ jobs:
           docker run --rm mediator:test doctor --no-ansi -C /etc/mediator/mediator.yaml.dist
 
           # A real conversion, as a non-root user the way a NAS runs it:
-          # E-AC3 5.1 in English and German -> AAC stereo, English only.
+          # E-AC3 5.1 in English and German -> AAC stereo, English only, and
+          # the poster must stay cover art (an attachment), not become a track.
           mkdir -p smoke
           printf '%s\n' 'audio: {preferred: [aac], convert: {channels: 2}, languages: [eng]}' > smoke/mediator.yaml
           run() { docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/smoke:/media" "$@"; }
           run --entrypoint /usr/local/bin/ffmpeg mediator:test -v error \
+            -f lavfi -i testsrc=size=60x90:duration=1 -frames:v 1 /media/poster.jpg
+          run --entrypoint /usr/local/bin/ffmpeg mediator:test -v error \
             -f lavfi -i testsrc=size=320x240:rate=25:duration=3 -f lavfi -i sine=duration=3 \
             -map 0 -map 1 -map 1 -c:v libx264 -c:a eac3 -ac 6 \
-            -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger /media/Test.mkv
+            -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+            -attach /media/poster.jpg -metadata:s:t mimetype=image/jpeg -metadata:s:t filename=poster.jpg \
+            /media/Test.mkv
           run -v "$PWD/smoke/mediator.yaml:/config/mediator.yaml:ro" mediator:test run --no-ansi /media --ack
           run --entrypoint /usr/local/bin/ffprobe mediator:test -v error \
-            -show_entries stream=codec_name,channels:stream_tags=language -of csv=p=0 /media/Test-mediator.mkv | tee streams.txt
-          diff <(printf 'h264\naac,2,eng\n') streams.txt
+            -show_entries stream=codec_name,channels:stream_tags=language:stream_disposition=attached_pic \
+            -of csv=p=0 /media/Test-mediator.mkv | tee streams.txt
+          # codec, channels, attached_pic, language: the poster must keep attached_pic=1.
+          diff <(printf 'h264,0\naac,2,0,eng\nmjpeg,1\n') streams.txt
           # A second run must find nothing left to do.
           run -v "$PWD/smoke/mediator.yaml:/config/mediator.yaml:ro" mediator:test run --no-ansi /media | tee second.txt
           grep -q 'Would convert: 0' second.txt

@@ -143,6 +143,10 @@ becomes AAC. Leave a list out and that kind of stream is never touched.
   A file never loses all its audio: if none of its audio tracks match, all
   are kept, with a warning. If the default audio track is dropped, the first
   remaining one becomes the default.
+- **Cover art** (an embedded poster) is kept as cover art. In MKV it is
+  extracted and re-attached as an attachment, because ffmpeg would otherwise
+  turn it into a one-frame video track. A file where that already happened
+  (the poster shows as `mjpeg … cover` with `-> attachment`) is repaired.
 - **`convert` settings** apply only to streams that are actually converted.
   `channels: 2` downmixes a converted 7.1 TrueHD track, but leaves a 5.1 AAC
   track alone, because it's already acceptable. Mono is never upmixed.

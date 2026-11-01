@@ -43,11 +43,19 @@ var probeCmd = &console.Command{
 			return nil
 		}
 		if terminal.IsVerbose() {
-			fmt.Fprintf(c.App.Writer, "\n%s", quote(tc.FFmpeg))
-			for _, a := range transcode.Args(p, transcode.TempPath(out)) {
-				fmt.Fprintf(c.App.Writer, " %s", quote(a))
+			covers := transcode.Covers(p, "covers")
+			cmd := func(args []string) {
+				fmt.Fprintf(c.App.Writer, "%s", quote(tc.FFmpeg))
+				for _, a := range args {
+					fmt.Fprintf(c.App.Writer, " %s", quote(a))
+				}
+				fmt.Fprintln(c.App.Writer)
 			}
 			fmt.Fprintln(c.App.Writer)
+			for index, path := range covers {
+				cmd(transcode.ExtractArgs(p, index, path))
+			}
+			cmd(transcode.Args(p, transcode.TempPath(out), covers))
 		}
 		return nil
 	},

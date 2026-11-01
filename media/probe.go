@@ -72,8 +72,54 @@ func parseClock(v string) float64 {
 func (s Stream) Title() string { return s.Tags["title"] }
 
 // IsCoverArt reports whether a "video" stream is really an embedded picture
-// (poster, thumbnail). Those are copied as-is and never transcoded.
-func (s Stream) IsCoverArt() bool { return s.Disposition["attached_pic"] == 1 }
+// (poster, thumbnail). Those are copied as-is and never transcoded. Besides
+// the attached_pic flag, a picture carrying the filename/mimetype tags of a
+// Matroska attachment counts too: see CoverLost.
+func (s Stream) IsCoverArt() bool {
+	return s.CodecType == "video" && (s.Disposition["attached_pic"] == 1 || s.CoverLost())
+}
+
+// CoverLost reports whether a picture is cover art that was written back to
+// Matroska as a one-frame video track instead of an attachment, which is what
+// ffmpeg does when a poster is simply copied into an MKV. It keeps the
+// attachment's FILENAME/MIMETYPE tags but loses the attached_pic flag.
+func (s Stream) CoverLost() bool {
+	if s.CodecType != "video" || s.Disposition["attached_pic"] == 1 || !isImageCodec(s.CodecName) {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(s.Tag("mimetype")), "image/") || s.Tag("filename") != ""
+}
+
+// Tag returns a tag regardless of case: Matroska attachments come back as
+// "filename", tracks as "FILENAME".
+func (s Stream) Tag(name string) string {
+	for k, v := range s.Tags {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+func isImageCodec(codec string) bool {
+	switch codec {
+	case "mjpeg", "png", "bmp", "gif", "webp":
+		return true
+	}
+	return false
+}
+
+// CoverFile returns the file extension and MIME type cover art in this codec
+// is attached with, and whether it can be re-attached at all.
+func CoverFile(codec string) (ext, mimetype string, ok bool) {
+	switch codec {
+	case "mjpeg":
+		return ".jpg", "image/jpeg", true
+	case "png":
+		return ".png", "image/png", true
+	}
+	return "", "", false
+}
 
 // IsHDR reports whether a video stream uses an HDR transfer function. Converting
 // one to another codec with default settings throws the HDR away.

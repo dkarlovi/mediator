@@ -38,8 +38,29 @@ func TempPath(out string) string {
 	return filepath.Join(dir, strings.TrimSuffix(base, ext)+TempMarker+strings.TrimPrefix(ext, "."))
 }
 
-// Args builds the ffmpeg arguments that execute a plan into out.
-func Args(p *plan.Plan, out string) []string {
+// Covers returns where each re-attached cover of the plan is extracted to
+// inside dir, keyed by input stream index.
+func Covers(p *plan.Plan, dir string) map[int]string {
+	covers := map[int]string{}
+	for _, s := range p.Kept() {
+		if s.Reattach {
+			ext, _, _ := media.CoverFile(s.Stream.CodecName)
+			covers[s.Stream.Index] = filepath.Join(dir, fmt.Sprintf("cover-%d%s", s.Stream.Index, ext))
+		}
+	}
+	return covers
+}
+
+// ExtractArgs builds the ffmpeg arguments that copy one cover image out of the
+// source, byte for byte, so it can be re-attached.
+func ExtractArgs(p *plan.Plan, index int, path string) []string {
+	return []string{"-hide_banner", "-nostdin", "-y", "-v", "error",
+		"-i", p.Source, "-map", "0:" + strconv.Itoa(index), "-c", "copy", "-frames:v", "1", "-f", "image2", path}
+}
+
+// Args builds the ffmpeg arguments that execute a plan into out. covers are
+// the extracted cover images (see Covers), attached instead of mapped.
+func Args(p *plan.Plan, out string, covers map[int]string) []string {
 	args := []string{
 		"-hide_banner", "-nostdin", "-y",
 		"-v", "error",
@@ -58,6 +79,16 @@ func Args(p *plan.Plan, out string) []string {
 	)
 	for i, s := range p.Kept() {
 		o := strconv.Itoa(i)
+		if s.Reattach {
+			_, mimetype, _ := media.CoverFile(s.Stream.CodecName)
+			name := s.Stream.Tag("filename")
+			if name == "" {
+				name = filepath.Base(covers[s.Stream.Index])
+			}
+			args = append(args, "-attach", covers[s.Stream.Index],
+				"-metadata:s:"+o, "mimetype="+mimetype, "-metadata:s:"+o, "filename="+name)
+			continue
+		}
 		args = append(args, "-map", "0:"+strconv.Itoa(s.Stream.Index))
 		switch s.Action {
 		case plan.Copy:
@@ -206,8 +237,26 @@ func Execute(ctx context.Context, p *plan.Plan, out string, opts Options) (res R
 		}
 	}()
 
+	var covers map[int]string
+	if c := Covers(p, ""); len(c) > 0 {
+		dir, err := os.MkdirTemp(opts.WorkDir, "mediator-covers-")
+		if err != nil {
+			return res, fmt.Errorf("creating a folder for cover art: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		covers = Covers(p, dir)
+		for index, path := range covers {
+			if out, err := exec.CommandContext(ctx, opts.FFmpeg, ExtractArgs(p, index, path)...).CombinedOutput(); err != nil {
+				return res, fmt.Errorf("extracting cover art (stream #%d): %v: %s", index, err, lastLines(strings.TrimSpace(string(out)), 3))
+			}
+			if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+				return res, fmt.Errorf("extracting cover art (stream #%d): no image written", index)
+			}
+		}
+	}
+
 	srcSize, _ := strconv.ParseInt(p.Info.Format.Size, 10, 64)
-	if err := run(ctx, opts.FFmpeg, Args(p, work), p.Info.Duration(), srcSize, progress); err != nil {
+	if err := run(ctx, opts.FFmpeg, Args(p, work, covers), p.Info.Duration(), srcSize, progress); err != nil {
 		return res, err
 	}
 	if err := verify(ctx, opts.FFprobe, p, work); err != nil {
@@ -472,6 +521,11 @@ func verify(ctx context.Context, ffprobe string, p *plan.Plan, out string) error
 	if err != nil {
 		return err
 	}
+	return verifyStreams(p, info)
+}
+
+// verifyStreams checks a probed output against the plan.
+func verifyStreams(p *plan.Plan, info *media.Info) error {
 	want := len(p.Kept())
 	if got := len(info.Streams); got != want {
 		return fmt.Errorf("expected %d streams, found %d", want, got)
@@ -483,6 +537,12 @@ func verify(ctx context.Context, ffprobe string, p *plan.Plan, out string) error
 		}
 		if got := info.Streams[i].CodecName; got != wantCodec {
 			return fmt.Errorf("stream #%d: expected %s, found %s", i, wantCodec, got)
+		}
+		if s.Stream.IsCoverArt() && !info.Streams[i].IsCoverArt() {
+			return fmt.Errorf("stream #%d: cover art came out as a regular video track", i)
+		}
+		if s.Reattach && info.Streams[i].CoverLost() {
+			return fmt.Errorf("stream #%d: cover art was written as a video track, not an attachment", i)
 		}
 	}
 	return verifyDuration(p, info)

@@ -340,3 +340,43 @@ func TestBuildForNeedsTheMuxer(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestCoverArtIsReattachedInMatroska(t *testing.T) {
+	cover := media.Stream{Index: 1, CodecType: "video", CodecName: "mjpeg", Disposition: map[string]int{"attached_pic": 1}}
+	lost := media.Stream{Index: 1, CodecType: "video", CodecName: "mjpeg", Tags: map[string]string{"FILENAME": "cover.jpg"}}
+	streams := func(c media.Stream) []media.Stream {
+		return []media.Stream{video(0, "h264"), c, audio(2, "aac", 2)}
+	}
+	c := cfg(t, `audio: {preferred: [aac]}`)
+
+	p, err := Build(&media.Info{Path: "/x/a.mkv", Streams: streams(cover)}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Streams[1].Reattach || p.NeedsWork() {
+		t.Errorf("an attached cover is re-attached, and alone needs no work: %+v", p.Streams[1])
+	}
+	// Attachments come after every mapped stream.
+	if k := p.Kept(); k[2].Stream.Index != 1 || k[1].Stream.Index != 2 {
+		t.Errorf("kept order: %v, %v, %v", k[0].Stream.Index, k[1].Stream.Index, k[2].Stream.Index)
+	}
+
+	// A poster that an earlier remux turned into a track is repaired.
+	p, err = Build(&media.Info{Path: "/x/a.mkv", Streams: streams(lost)}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Streams[1].Repair() || !p.NeedsWork() || p.Streams[1].Action != Copy {
+		t.Errorf("lost cover should be repaired, not converted: %+v", p.Streams[1])
+	}
+
+	// MP4 keeps cover art natively: no re-attaching there.
+	mp4 := cfg(t, "container: {preferred: [mp4]}\naudio: {preferred: [aac]}")
+	p, err = Build(&media.Info{Path: "/x/a.mkv", Streams: streams(cover)}, mp4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Streams[1].Reattach || p.Streams[1].Action != Copy {
+		t.Errorf("mp4: %+v", p.Streams[1])
+	}
+}

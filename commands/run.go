@@ -292,6 +292,10 @@ func printPlan(w io.Writer, p *plan.Plan, out, indent string) {
 		}
 		switch s.Action {
 		case plan.Copy:
+			if s.Repair() {
+				fmt.Fprintf(w, "%s%-11s %-28s <fg=yellow>-> attachment</> (%s)\n", in, label, desc, s.Reason)
+				continue
+			}
 			fmt.Fprintf(w, "%s%-11s %-28s keep%s\n", in, label, desc, note)
 		case plan.Convert:
 			target := s.Codec

@@ -74,5 +74,8 @@ Config lookup: `--config`, then `./mediator.yaml`, then
 - With `original: delete`, an existing `-mediator` copy is installed
   (`transcode.Adopt`, after `Verify` against the current plan) instead of
   converting again; one that no longer matches is reconverted and removed.
+- Cover art stays cover art: in Matroska it is re-attached (`-attach`),
+  never mapped, since ffmpeg would write it as a video track; verification
+  fails if a cover comes out as anything else.
 - Runs are idempotent: a converted file, or a source whose `-mediator` copy
   exists, is not converted again.

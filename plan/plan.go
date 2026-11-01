@@ -47,6 +47,9 @@ type StreamPlan struct {
 	// MakeDefault marks this stream as the default track of its kind, set
 	// when the source's default audio track is dropped.
 	MakeDefault bool
+	// Reattach writes cover art into a Matroska output as an attachment.
+	// Copied as a stream, ffmpeg would turn it into a one-frame video track.
+	Reattach bool
 }
 
 // Plan is everything that will happen to one file.
@@ -67,22 +70,33 @@ func (p *Plan) NeedsWork() bool {
 		return true
 	}
 	for _, s := range p.Streams {
-		if s.Action != Copy {
+		if s.Action != Copy || s.Repair() {
 			return true
 		}
 	}
 	return false
 }
 
+// Repair reports whether a stream is cover art that an earlier remux turned
+// into a video track, and this plan restores as an attachment.
+func (s StreamPlan) Repair() bool { return s.Reattach && s.Stream.CoverLost() }
+
 // Kept returns the streams that end up in the output, in output order.
+//
+// Cover art that is re-attached comes last, because ffmpeg adds attachments
+// after all mapped streams.
 func (p *Plan) Kept() []StreamPlan {
-	var kept []StreamPlan
+	var kept, attached []StreamPlan
 	for _, s := range p.Streams {
-		if s.Action != Drop {
+		switch {
+		case s.Action == Drop:
+		case s.Reattach:
+			attached = append(attached, s)
+		default:
 			kept = append(kept, s)
 		}
 	}
-	return kept
+	return append(kept, attached...)
 }
 
 // maxChannels caps encoders that cannot produce more channels than this.
@@ -196,6 +210,13 @@ func (p *Plan) planStream(s media.Stream, cfg *config.Config) (StreamPlan, error
 	switch s.CodecType {
 	case "video":
 		if s.IsCoverArt() {
+			if _, _, ok := media.CoverFile(s.CodecName); ok && dst.Muxer == "matroska" {
+				sp := StreamPlan{Stream: s, Action: Copy, Reattach: true}
+				if s.CoverLost() {
+					sp.Reason = "cover art stored as a video track; restoring it as an attachment"
+				}
+				return sp, nil
+			}
 			if dst.Allows("video", s.CodecName) {
 				return StreamPlan{Stream: s, Action: Copy}, nil
 			}

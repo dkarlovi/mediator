@@ -41,7 +41,7 @@ subtitles: {preferred: [srt]}
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(Args(p, "/in/a.mediator-tmp.mp4"), " ")
+	got := strings.Join(Args(p, "/in/a.mediator-tmp.mp4", nil), " ")
 	// The attachment (input #1) is dropped, so output indexes shift down.
 	for _, want := range []string{
 		"-map 0:0 -c:0 copy -tag:0 hvc1",
@@ -237,6 +237,50 @@ audio: {preferred: [aac]}
 			t.Errorf("kept audio: language %q, default %d", a.Language(), a.Disposition["default"])
 		}
 	})
+	t.Run("cover art stays an attachment", func(t *testing.T) {
+		dir := t.TempDir()
+		cover := filepath.Join(dir, "poster.jpg")
+		src := filepath.Join(dir, "Film.mkv")
+		for _, args := range [][]string{
+			{"-v", "error", "-f", "lavfi", "-i", "testsrc=size=60x90:duration=1", "-frames:v", "1", cover},
+			{"-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+				"-f", "lavfi", "-i", "sine=f=440:duration=2", "-c:v", "libx264", "-c:a", "ac3",
+				"-attach", cover, "-metadata:s:t", "mimetype=image/jpeg", "-metadata:s:t", "filename=poster.jpg", src},
+		} {
+			if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+				t.Fatalf("generating sample: %v\n%s", err, out)
+			}
+		}
+		ac := mustConfig(t, "audio: {preferred: [aac]}")
+		info, err := media.Probe(context.Background(), ac.FFprobe, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := plan.Build(info, ac)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "Film-out.mkv")
+		if _, err := Execute(context.Background(), p, out, Options{FFmpeg: ac.FFmpeg, FFprobe: ac.FFprobe}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := media.Probe(context.Background(), ac.FFprobe, out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		poster := res.Streams[len(res.Streams)-1]
+		if poster.Disposition["attached_pic"] != 1 || poster.CoverLost() || poster.Tag("filename") != "poster.jpg" {
+			t.Errorf("poster came out as %+v", poster)
+		}
+		// Converting the output again must find nothing to do.
+		again, err := plan.Build(res, ac)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.NeedsWork() {
+			t.Errorf("second pass wants to change the file again")
+		}
+	})
 	t.Run("into a new directory elsewhere", func(t *testing.T) {
 		// What a caller with its own target layout (fileferry) would do.
 		src, p := sample(t)
@@ -278,6 +322,25 @@ func TestPreflight(t *testing.T) {
 		if (want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), want)) {
 			t.Errorf("Preflight(%s) = %v, want %q", filepath.Base(out), err, want)
 		}
+	}
+}
+
+func TestVerifyCatchesLostCoverArt(t *testing.T) {
+	src := &media.Info{Path: "/x/a.mkv", Streams: []media.Stream{
+		{Index: 0, CodecType: "video", CodecName: "h264"},
+		{Index: 1, CodecType: "video", CodecName: "mjpeg", Disposition: map[string]int{"attached_pic": 1}},
+	}}
+	p, err := plan.Build(src, mustConfig(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the bug produced: the poster as a plain track.
+	out := &media.Info{Streams: []media.Stream{
+		{CodecType: "video", CodecName: "h264"},
+		{CodecType: "video", CodecName: "mjpeg", Tags: map[string]string{"FILENAME": "cover.jpg"}},
+	}}
+	if err := verifyStreams(p, out); err == nil || !strings.Contains(err.Error(), "cover art") {
+		t.Errorf("err = %v", err)
 	}
 }
 
