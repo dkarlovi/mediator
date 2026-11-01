@@ -39,7 +39,12 @@ Config lookup: `--config`, then `./mediator.yaml`, then
 - `plan/`: the decision engine. It is pure (probe data + config in, plan out)
   and must stay free of I/O, so it is unit-tested without ffmpeg.
 - `transcode/`: plan -> ffmpeg arguments, execution with `-progress` parsing,
-  verification by re-probing, and swapping the output into place.
+  verification by re-probing, and installing the output. The caller passes
+  the output path (`Execute(ctx, plan, out, opts)`) and whether to remove the
+  source; `transcode` must not learn about mediator's naming or `original`
+  policy, so it stays reusable by other tools (e.g. fileferry).
+- `commands/naming.go`: mediator's output naming (`-mediator` suffix or
+  replace), derived from the `original` policy.
 - `scan/`: finding media files under the given paths, skipping mediator's
   temp files and dotfiles.
 

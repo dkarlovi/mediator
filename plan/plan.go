@@ -14,21 +14,6 @@ import (
 	"github.com/dkarlovi/mediator/media"
 )
 
-// Suffix marks the converted copy written beside a kept original:
-// "Episode.mkv" -> "Episode-mediator.mkv".
-const Suffix = "-mediator"
-
-// OutputPath is where the converted version of src goes.
-func OutputPath(src string, dst media.Container, policy config.OriginalPolicy) string {
-	stem := strings.TrimSuffix(src, filepath.Ext(src))
-	// A file mediator produced itself is never an original worth keeping, so
-	// it is converted in place instead of growing a second suffix.
-	if policy == config.OriginalKeep && !strings.HasSuffix(stem, Suffix) {
-		stem += Suffix
-	}
-	return stem + "." + dst.Ext
-}
-
 // Action is what happens to a single stream.
 type Action string
 
@@ -65,7 +50,6 @@ type StreamPlan struct {
 type Plan struct {
 	Info     *media.Info
 	Source   string
-	Output   string
 	Src      media.Container
 	Dst      media.Container
 	Streams  []StreamPlan
@@ -113,7 +97,6 @@ func Build(info *media.Info, cfg *config.Config) (*Plan, error) {
 	p := &Plan{
 		Info:   info,
 		Source: info.Path,
-		Output: OutputPath(info.Path, dst, cfg.Original),
 		Src:    src,
 		Dst:    dst,
 	}

@@ -63,23 +63,21 @@ func TestExecute(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not installed")
 	}
-	dir := t.TempDir()
-	src := filepath.Join(dir, "Episode.avi")
-	gen := exec.Command("ffmpeg", "-v", "error",
-		"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
-		"-f", "lavfi", "-i", "sine=f=440:duration=2",
-		"-c:v", "mpeg4", "-c:a", "ac3", src)
-	if out, err := gen.CombinedOutput(); err != nil {
-		t.Fatalf("generating sample: %v\n%s", err, out)
-	}
-
-	convert := func(t *testing.T, policy config.OriginalPolicy) Result {
-		t.Helper()
-		c := mustConfig(t, `
+	c := mustConfig(t, `
 container: {preferred: [mkv]}
 video: {preferred: [h264], convert: {preset: ultrafast}}
 audio: {preferred: [aac]}
-original: `+string(policy))
+`)
+	sample := func(t *testing.T) (string, *plan.Plan) {
+		t.Helper()
+		src := filepath.Join(t.TempDir(), "Episode.avi")
+		gen := exec.Command("ffmpeg", "-v", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+			"-f", "lavfi", "-i", "sine=f=440:duration=2",
+			"-c:v", "mpeg4", "-c:a", "ac3", src)
+		if out, err := gen.CombinedOutput(); err != nil {
+			t.Fatalf("generating sample: %v\n%s", err, out)
+		}
 		info, err := media.Probe(context.Background(), c.FFprobe, src)
 		if err != nil {
 			t.Fatal(err)
@@ -88,79 +86,109 @@ original: `+string(policy))
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := Execute(context.Background(), p, Options{FFmpeg: c.FFmpeg, FFprobe: c.FFprobe, Original: c.Original})
+		return src, p
+	}
+	execute := func(t *testing.T, p *plan.Plan, out string, remove bool) Result {
+		t.Helper()
+		res, err := Execute(context.Background(), p, out, Options{FFmpeg: c.FFmpeg, FFprobe: c.FFprobe, RemoveSource: remove})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(TempPath(p)); !os.IsNotExist(err) {
+		if res.Output != out {
+			t.Errorf("output = %s, want %s", res.Output, out)
+		}
+		if exists(TempPath(out)) {
 			t.Errorf("temp file left behind")
 		}
-		out, err := media.Probe(context.Background(), c.FFprobe, res.Output)
+		info, err := media.Probe(context.Background(), c.FFprobe, out)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Streams[0].CodecName != "h264" || out.Streams[1].CodecName != "aac" {
-			t.Errorf("output streams: %+v", out.Streams)
+		if info.Streams[0].CodecName != "h264" || info.Streams[1].CodecName != "aac" {
+			t.Errorf("output streams: %+v", info.Streams)
 		}
 		return res
 	}
 
-	// keep: original untouched, converted copy beside it.
-	res := convert(t, config.OriginalKeep)
-	if want := filepath.Join(dir, "Episode-mediator.mkv"); res.Output != want || res.Deleted {
-		t.Errorf("keep: output = %s, deleted = %v", res.Output, res.Deleted)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Errorf("keep: source gone: %v", err)
-	}
-	if err := os.Remove(res.Output); err != nil {
-		t.Fatal(err)
-	}
-
-	// delete: converted file takes the source's name, source removed.
-	res = convert(t, config.OriginalDelete)
-	if want := filepath.Join(dir, "Episode.mkv"); res.Output != want || !res.Deleted {
-		t.Errorf("delete: output = %s, deleted = %v", res.Output, res.Deleted)
-	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("delete: source not removed")
-	}
-}
-
-func TestOutputPath(t *testing.T) {
-	mkv, _ := media.LookupContainer("mkv")
-	for _, tt := range []struct {
-		src    string
-		policy config.OriginalPolicy
-		want   string
-	}{
-		{"/s/E01.mkv", config.OriginalKeep, "/s/E01-mediator.mkv"},
-		{"/s/E01.avi", config.OriginalKeep, "/s/E01-mediator.mkv"},
-		{"/s/E01-mediator.mkv", config.OriginalKeep, "/s/E01-mediator.mkv"}, // our own output: in place
-		{"/s/E01.mkv", config.OriginalDelete, "/s/E01.mkv"},
-		{"/s/E01.avi", config.OriginalDelete, "/s/E01.mkv"},
-	} {
-		if got := plan.OutputPath(tt.src, mkv, tt.policy); got != tt.want {
-			t.Errorf("OutputPath(%s, %s) = %s, want %s", tt.src, tt.policy, got, tt.want)
+	t.Run("beside the source, keeping it", func(t *testing.T) {
+		src, p := sample(t)
+		res := execute(t, p, filepath.Join(filepath.Dir(src), "Episode-converted.mkv"), false)
+		if res.Deleted || !exists(src) {
+			t.Errorf("source must be kept")
 		}
+	})
+	t.Run("replacing the source", func(t *testing.T) {
+		src, p := sample(t)
+		res := execute(t, p, filepath.Join(filepath.Dir(src), "Episode.mkv"), true)
+		if !res.Deleted || exists(src) {
+			t.Errorf("source must be removed")
+		}
+	})
+	t.Run("copying B-frame h264 out of avi", func(t *testing.T) {
+		// AVI has no presentation timestamps; muxing copied H.264 with
+		// B-frames into MKV fails unless ffmpeg generates them.
+		src := filepath.Join(t.TempDir(), "Rip.avi")
+		gen := exec.Command("ffmpeg", "-v", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+			"-f", "lavfi", "-i", "sine=f=440:duration=2",
+			"-c:v", "libx264", "-bf", "3", "-c:a", "ac3", src)
+		if out, err := gen.CombinedOutput(); err != nil {
+			t.Fatalf("generating sample: %v\n%s", err, out)
+		}
+		info, err := media.Probe(context.Background(), c.FFprobe, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := plan.Build(info, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Streams[0].Action != plan.Copy {
+			t.Fatalf("video should be copied, got %s", p.Streams[0].Action)
+		}
+		execute(t, p, filepath.Join(filepath.Dir(src), "Rip.mkv"), true)
+	})
+	t.Run("into a new directory elsewhere", func(t *testing.T) {
+		// What a caller with its own target layout (fileferry) would do.
+		src, p := sample(t)
+		out := filepath.Join(t.TempDir(), "2024", "2024-06-02", "Episode.mkv")
+		execute(t, p, out, false)
+		if !exists(src) {
+			t.Errorf("source must be kept")
+		}
+	})
+}
+
+func TestTempPath(t *testing.T) {
+	got := TempPath(filepath.Join("s", "E01-mediator.mkv"))
+	if want := filepath.Join("s", "E01-mediator.mediator-tmp.mkv"); got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
-func TestPreflightRefusesToOverwrite(t *testing.T) {
+func TestPreflight(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a.avi")
-	for _, f := range []string{src, filepath.Join(dir, "a.mkv")} {
+	taken := filepath.Join(dir, "a.mkv")
+	for _, f := range []string{src, taken} {
 		if err := os.WriteFile(f, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	c := mustConfig(t, "container: {preferred: [mkv]}\noriginal: delete")
+	c := mustConfig(t, `container: {preferred: [mkv]}`)
 	p, err := plan.Build(&media.Info{Path: src, Streams: []media.Stream{{Index: 0, CodecType: "video", CodecName: "h264"}}}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Preflight(p); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("err = %v", err)
+	for out, want := range map[string]string{
+		taken:                          "already exists",
+		filepath.Join(dir, "a.mp4"):    "planned .mkv extension",
+		filepath.Join(dir, "free.mkv"): "",
+	} {
+		err := Preflight(p, out)
+		if (want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), want)) {
+			t.Errorf("Preflight(%s) = %v, want %q", filepath.Base(out), err, want)
+		}
 	}
 }
 

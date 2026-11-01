@@ -112,19 +112,20 @@ Paths can be files or directories, local or on a network share:
 			}
 			// With original: keep, an existing "-mediator" copy means an
 			// earlier run already did this file.
-			if cfg.Original == config.OriginalKeep && p.Output != p.Source {
-				if _, err := os.Stat(p.Output); err == nil {
+			out := outputPath(p, cfg.Original)
+			if cfg.Original == config.OriginalKeep && out != p.Source {
+				if _, err := os.Stat(out); err == nil {
 					converted++
 					if c.Bool("show-ok") || terminal.IsVerbose() {
 						header(f)
-						fmt.Fprintf(c.App.Writer, "  <info>%s</>: already converted to %s\n", filepath.Base(f), filepath.Base(p.Output))
+						fmt.Fprintf(c.App.Writer, "  <info>%s</>: already converted to %s\n", filepath.Base(f), filepath.Base(out))
 					}
 					continue
 				}
 			}
 			header(f)
-			printPlan(c.App.Writer, p, "  ")
-			if err := transcode.Preflight(p); err != nil {
+			printPlan(c.App.Writer, p, out, "  ")
+			if err := transcode.Preflight(p, out); err != nil {
 				reportError(c, f, err)
 				failed++
 				continue
@@ -138,11 +139,11 @@ Paths can be files or directories, local or on a network share:
 				progress = progressPrinter(c.App.Writer, n+1, len(files))
 			}
 
-			res, err := transcode.Execute(ctx, p, transcode.Options{
-				FFmpeg:   cfg.FFmpeg,
-				FFprobe:  cfg.FFprobe,
-				Original: cfg.Original,
-				Progress: progress,
+			res, err := transcode.Execute(ctx, p, out, transcode.Options{
+				FFmpeg:       cfg.FFmpeg,
+				FFprobe:      cfg.FFprobe,
+				RemoveSource: cfg.Original == config.OriginalDelete,
+				Progress:     progress,
 			})
 			if interactive {
 				fmt.Fprint(c.App.Writer, "\r\033[K")
@@ -189,11 +190,11 @@ func reportError(c *console.Context, path string, err error) {
 	fmt.Fprintf(c.App.ErrWriter, "<fg=red>Error: %s: %v</>\n", path, err)
 }
 
-func printPlan(w io.Writer, p *plan.Plan, indent string) {
+func printPlan(w io.Writer, p *plan.Plan, out, indent string) {
 	fmt.Fprintf(w, "%s<info>%s</>\n", indent, filepath.Base(p.Source))
 	in := indent + "  "
 	if p.Src.Name != p.Dst.Name {
-		fmt.Fprintf(w, "%s%-11s %-28s <fg=yellow>-> %s</> (%s)\n", in, "container", p.Src.Name, p.Dst.Name, filepath.Base(p.Output))
+		fmt.Fprintf(w, "%s%-11s %-28s <fg=yellow>-> %s</> (%s)\n", in, "container", p.Src.Name, p.Dst.Name, filepath.Base(out))
 	} else {
 		fmt.Fprintf(w, "%s%-11s %-28s keep\n", in, "container", p.Src.Name)
 	}

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -47,5 +50,50 @@ func TestParseErrors(t *testing.T) {
 		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
 			t.Errorf("%s: error = %v, want %q", yaml, err, want)
 		}
+	}
+}
+
+func TestLoadPreferLookupOrder(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		t.Skip("XDG lookup applies to Linux and other Unixes")
+	}
+	root := t.TempDir()
+	write := func(path string) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("audio: {preferred: [aac]}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	home := filepath.Join(root, "home")
+	xdg := filepath.Join(root, "xdg")
+	homeCfg := write(filepath.Join(home, ".config", "mediator", FileName))
+	xdgCfg := write(filepath.Join(xdg, "mediator", FileName))
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir()) // no ./mediator.yaml
+
+	for _, tt := range []struct{ xdg, want string }{
+		{xdg, xdgCfg},
+		{"", homeCfg},
+		{"relative/dir", homeCfg}, // spec: ignore relative paths
+	} {
+		t.Setenv("XDG_CONFIG_HOME", tt.xdg)
+		_, got, err := LoadPrefer("")
+		if err != nil || got != tt.want {
+			t.Errorf("XDG_CONFIG_HOME=%q: got %q, %v; want %q", tt.xdg, got, err, tt.want)
+		}
+	}
+
+	// ./mediator.yaml beats the user config dir, --config beats both.
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	write(FileName)
+	if _, got, _ := LoadPrefer(""); got != FileName {
+		t.Errorf("cwd config not preferred: %q", got)
+	}
+	if _, got, _ := LoadPrefer(homeCfg); got != homeCfg {
+		t.Errorf("explicit config not preferred: %q", got)
 	}
 }

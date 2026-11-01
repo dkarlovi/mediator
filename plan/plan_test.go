@@ -133,8 +133,8 @@ subtitles: {preferred: [srt]}
 	if got, want := actions(p), "copy convert:aac convert:mov_text drop drop"; got != want {
 		t.Errorf("actions = %q, want %q", got, want)
 	}
-	if p.Output != "/x/a-mediator.mp4" {
-		t.Errorf("output = %s", p.Output)
+	if p.Dst.Name != "mp4" {
+		t.Errorf("dst = %s", p.Dst.Name)
 	}
 }
 

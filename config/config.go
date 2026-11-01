@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 
 	"github.com/dkarlovi/mediator/media"
 	"gopkg.in/yaml.v3"
@@ -150,17 +151,35 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// userConfigDir is os.UserConfigDir, except that a relative $XDG_CONFIG_HOME
+// falls back to ~/.config instead of disabling the lookup: Go rejects such a
+// value outright, while the XDG spec says to ignore it.
+func userConfigDir() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err == nil || runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "ios" || runtime.GOOS == "plan9" {
+		return dir, err
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config"), nil
+}
+
 // LoadPrefer loads the first config file that exists, in order:
 //  1. the explicit path, if given,
 //  2. ./mediator.yaml,
-//  3. <user config dir>/mediator/mediator.yaml.
+//  3. the user config dir: $XDG_CONFIG_HOME/mediator/mediator.yaml, else
+//     ~/.config/mediator/mediator.yaml on Linux and other Unixes;
+//     %AppData%\mediator\mediator.yaml on Windows;
+//     ~/Library/Application Support/mediator/mediator.yaml on macOS.
 func LoadPrefer(explicit string) (*Config, string, error) {
 	if explicit != "" {
 		cfg, err := Load(explicit)
 		return cfg, explicit, err
 	}
 	candidates := []string{FileName}
-	if dir, err := os.UserConfigDir(); err == nil {
+	if dir, err := userConfigDir(); err == nil {
 		candidates = append(candidates, filepath.Join(dir, "mediator", FileName))
 	}
 	for _, p := range candidates {

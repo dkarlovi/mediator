@@ -87,20 +87,23 @@ type Container struct {
 	// HvcTag tags HEVC as hvc1 instead of hev1, which Apple players and many
 	// Plex clients require for HEVC in MP4/MOV.
 	HvcTag bool
+	// Timestamps is set when the container stores presentation timestamps.
+	// AVI does not; ffmpeg has to generate them when reading it.
+	Timestamps bool
 }
 
 var mp4Video = []string{"h264", "hevc", "av1", "vp9", "mpeg4", "mjpeg", "png"}
 var mp4Audio = []string{"aac", "mp3", "ac3", "eac3", "alac", "flac", "opus"}
 
 var containers = map[string]Container{
-	"mkv": {Name: "mkv", Ext: "mkv", Muxer: "matroska", Attachments: true,
+	"mkv": {Name: "mkv", Ext: "mkv", Muxer: "matroska", Attachments: true, Timestamps: true,
 		Subtitles: []string{"subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}},
-	"mp4":  {Name: "mp4", Ext: "mp4", Muxer: "mp4", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, FastStart: true, HvcTag: true},
-	"m4v":  {Name: "m4v", Ext: "m4v", Muxer: "mp4", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, FastStart: true, HvcTag: true},
-	"mov":  {Name: "mov", Ext: "mov", Muxer: "mov", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, Data: true, FastStart: true, HvcTag: true},
-	"webm": {Name: "webm", Ext: "webm", Muxer: "webm", Video: []string{"vp8", "vp9", "av1"}, Audio: []string{"opus", "vorbis"}, Subtitles: []string{"webvtt"}},
+	"mp4":  {Name: "mp4", Ext: "mp4", Muxer: "mp4", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, FastStart: true, HvcTag: true, Timestamps: true},
+	"m4v":  {Name: "m4v", Ext: "m4v", Muxer: "mp4", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, FastStart: true, HvcTag: true, Timestamps: true},
+	"mov":  {Name: "mov", Ext: "mov", Muxer: "mov", Video: mp4Video, Audio: mp4Audio, Subtitles: []string{"mov_text"}, Data: true, FastStart: true, HvcTag: true, Timestamps: true},
+	"webm": {Name: "webm", Ext: "webm", Muxer: "webm", Video: []string{"vp8", "vp9", "av1"}, Audio: []string{"opus", "vorbis"}, Subtitles: []string{"webvtt"}, Timestamps: true},
 	"avi":  {Name: "avi", Ext: "avi", Muxer: "avi", Subtitles: []string{}},
-	"ts":   {Name: "ts", Ext: "ts", Muxer: "mpegts", Subtitles: []string{"dvb_subtitle"}, Data: true},
+	"ts":   {Name: "ts", Ext: "ts", Muxer: "mpegts", Subtitles: []string{"dvb_subtitle"}, Data: true, Timestamps: true},
 }
 
 // LookupContainer returns the container for a name such as "mkv".

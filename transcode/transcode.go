@@ -1,5 +1,10 @@
 // Package transcode turns a plan into an ffmpeg run, verifies the result and
-// swaps it in for the original.
+// installs it at the output path the caller chose.
+//
+// It deliberately knows nothing about how outputs are named or whether
+// originals are kept; that is the caller's policy. mediator's CLI decides it
+// from mediator.yaml, and another tool (fileferry, say) can decide it from its
+// own target templates.
 package transcode
 
 import (
@@ -16,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkarlovi/mediator/config"
 	"github.com/dkarlovi/mediator/media"
 	"github.com/dkarlovi/mediator/plan"
 )
@@ -25,13 +29,13 @@ import (
 // picks up a half-written file left behind by an interrupted run.
 const TempMarker = ".mediator-tmp."
 
-// TempPath is where the output is written before it replaces the source. It
-// lives next to the source so the final swap is a rename on the same volume,
-// never a second copy across the network.
-func TempPath(p *plan.Plan) string {
-	dir, base := filepath.Split(p.Output)
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	return filepath.Join(dir, name+TempMarker+p.Dst.Ext)
+// TempPath is where the output for out is written while ffmpeg runs. It lives
+// next to out so installing it is a rename on the same volume, never a second
+// copy across the network.
+func TempPath(out string) string {
+	dir, base := filepath.Split(out)
+	ext := filepath.Ext(base)
+	return filepath.Join(dir, strings.TrimSuffix(base, ext)+TempMarker+strings.TrimPrefix(ext, "."))
 }
 
 // Args builds the ffmpeg arguments that execute a plan into out.
@@ -40,10 +44,18 @@ func Args(p *plan.Plan, out string) []string {
 		"-hide_banner", "-nostdin", "-y",
 		"-v", "error",
 		"-progress", "pipe:1", "-nostats",
+	}
+	if !p.Src.Timestamps {
+		// The source has no presentation timestamps (AVI): without generated
+		// ones, copying B-frame video into MKV/MP4 fails with "Can't write
+		// packet with unknown timestamp".
+		args = append(args, "-fflags", "+genpts")
+	}
+	args = append(args,
 		"-i", p.Source,
 		"-map_metadata", "0",
 		"-map_chapters", "0",
-	}
+	)
 	for i, s := range p.Kept() {
 		o := strconv.Itoa(i)
 		args = append(args, "-map", "0:"+strconv.Itoa(s.Stream.Index))
@@ -94,46 +106,60 @@ type Progress func(Status)
 
 // Options control a single execution.
 type Options struct {
-	FFmpeg   string
-	FFprobe  string
-	Original config.OriginalPolicy
-	Progress Progress
+	FFmpeg  string
+	FFprobe string
+	// RemoveSource deletes the plan's source once the output is installed at a
+	// different path. When the output path is the source itself, the source is
+	// always replaced.
+	RemoveSource bool
+	Progress     Progress
 }
 
 // Result describes what Execute did.
 type Result struct {
 	Output string
-	// Deleted is set when the source was removed (original: delete).
+	// Deleted is set when the source was removed (Options.RemoveSource).
 	Deleted bool
 	OldSize int64
 	NewSize int64
 	// Took is how long ffmpeg ran.
-	Took     time.Duration
-	Replaced bool
+	Took time.Duration
 }
 
 // Preflight reports problems Execute would hit before any work is done, so a
-// dry run can show them too.
-func Preflight(p *plan.Plan) error {
-	if p.Output != p.Source {
-		if _, err := os.Stat(p.Output); err == nil {
-			return fmt.Errorf("output %s already exists", p.Output)
+// dry run can show them too. out may be the plan's source (replace in place);
+// any other existing file is never overwritten.
+func Preflight(p *plan.Plan, out string) error {
+	if filepath.Ext(out) != "."+p.Dst.Ext {
+		return fmt.Errorf("output %s does not have the planned .%s extension", out, p.Dst.Ext)
+	}
+	if out != p.Source {
+		if _, err := os.Stat(out); err == nil {
+			return fmt.Errorf("output %s already exists", out)
 		}
 	}
-	if _, err := os.Stat(TempPath(p)); err == nil {
-		return fmt.Errorf("leftover temporary file %s exists (from an interrupted run?); remove it first", TempPath(p))
+	if tmp := TempPath(out); exists(tmp) {
+		return fmt.Errorf("leftover temporary file %s exists (from an interrupted run?); remove it first", tmp)
 	}
 	return nil
 }
 
-// Execute runs ffmpeg for the plan, verifies the output and replaces the
-// source with it. On any failure the source is left untouched and the
-// temporary output is removed.
-func Execute(ctx context.Context, p *plan.Plan, opts Options) (res Result, err error) {
-	if err := Preflight(p); err != nil {
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// Execute runs ffmpeg for the plan, verifies the output and installs it at
+// out, creating out's directory if needed. On any failure the source is left
+// untouched and the temporary output is removed.
+func Execute(ctx context.Context, p *plan.Plan, out string, opts Options) (res Result, err error) {
+	if err := Preflight(p, out); err != nil {
 		return res, err
 	}
-	tmp := TempPath(p)
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return res, fmt.Errorf("creating output directory: %w", err)
+	}
+	tmp := TempPath(out)
 	defer func() {
 		if err != nil {
 			_ = os.Remove(tmp)
@@ -157,15 +183,15 @@ func Execute(ctx context.Context, p *plan.Plan, opts Options) (res Result, err e
 		res.NewSize = fi.Size()
 	}
 
-	if err := os.Rename(tmp, p.Output); err != nil {
+	if err := os.Rename(tmp, out); err != nil {
 		return res, fmt.Errorf("installing output: %w", err)
 	}
-	res.Output = p.Output
-	// Different name and the original is not wanted: remove it only now that
-	// the output is in place, so there is never a moment with neither file.
-	if p.Output != p.Source && opts.Original == config.OriginalDelete {
+	res.Output = out
+	// Remove the source only now that the output is in place, so there is
+	// never a moment with neither file.
+	if out != p.Source && opts.RemoveSource {
 		if err := os.Remove(p.Source); err != nil {
-			return res, fmt.Errorf("output installed as %s, but removing the original failed: %w", p.Output, err)
+			return res, fmt.Errorf("output installed as %s, but removing the source failed: %w", out, err)
 		}
 		res.Deleted = true
 	}

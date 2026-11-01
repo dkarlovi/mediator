@@ -30,7 +30,10 @@ func main() {
 Lookup order (first existing path wins):
   1) <info>--config <path></> (explicit)
   2) <info>./mediator.yaml</> (current working directory)
-  3) user config dir: <info>$XDG_CONFIG_HOME/mediator/mediator.yaml</> or the OS-specific user config directory (via <info>os.UserConfigDir()</>)`,
+  3) user config dir:
+     Linux:   <info>$XDG_CONFIG_HOME/mediator/mediator.yaml</>, else <info>~/.config/mediator/mediator.yaml</>
+     Windows: <info>%AppData%\mediator\mediator.yaml</>
+     macOS:   <info>~/Library/Application Support/mediator/mediator.yaml</>`,
 			},
 		},
 		Commands: commands.Commands(),

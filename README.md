@@ -64,9 +64,18 @@ exact `ffmpeg` command it would run.
 
 ### Configuration
 
-Mediator looks for its config in this order: `--config <path>`, then
-`./mediator.yaml`, then `<user config dir>/mediator/mediator.yaml`
-(`~/.config/mediator/` on Linux, `%AppData%\mediator\` on Windows).
+Mediator uses the first config file it finds:
+
+1. `--config <path>`
+2. `./mediator.yaml` in the current directory
+3. the user config directory:
+   - Linux: `$XDG_CONFIG_HOME/mediator/mediator.yaml`, else
+     `~/.config/mediator/mediator.yaml` (also when `$XDG_CONFIG_HOME` is
+     unset, empty or relative, as the XDG spec says)
+   - Windows: `%AppData%\mediator\mediator.yaml`
+   - macOS: `~/Library/Application Support/mediator/mediator.yaml`
+
+`mediator run -v` prints which file it used.
 
 ```yaml
 container:

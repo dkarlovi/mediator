@@ -32,14 +32,15 @@ var probeCmd = &console.Command{
 		if err != nil {
 			return console.Exit(err.Error(), 1)
 		}
-		printPlan(c.App.Writer, p, "")
+		out := outputPath(p, cfg.Original)
+		printPlan(c.App.Writer, p, out, "")
 		if !p.NeedsWork() {
 			fmt.Fprintln(c.App.Writer, "\n<info>Already matches the config.</>")
 			return nil
 		}
 		if terminal.IsVerbose() {
 			fmt.Fprintf(c.App.Writer, "\n%s", cfg.FFmpeg)
-			for _, a := range transcode.Args(p, transcode.TempPath(p)) {
+			for _, a := range transcode.Args(p, transcode.TempPath(out)) {
 				fmt.Fprintf(c.App.Writer, " %s", quote(a))
 			}
 			fmt.Fprintln(c.App.Writer)
