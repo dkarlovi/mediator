@@ -31,33 +31,39 @@ func Canonical(name string) string {
 	return n
 }
 
-// encoders maps a target codec onto the ffmpeg encoder that produces it.
-var encoders = map[string]string{
+// encoders maps a target codec onto the ffmpeg encoders that produce it, in
+// order of preference. Builds differ in which external libraries they
+// include, so the first one the installed ffmpeg has is used (see
+// Toolchain.Encoder).
+var encoders = map[string][]string{
 	// audio
-	"aac":    "aac",
-	"mp3":    "libmp3lame",
-	"ac3":    "ac3",
-	"eac3":   "eac3",
-	"opus":   "libopus",
-	"flac":   "flac",
-	"vorbis": "libvorbis",
-	"alac":   "alac",
+	"aac":    {"aac"},
+	"mp3":    {"libmp3lame"},
+	"ac3":    {"ac3"},
+	"eac3":   {"eac3"},
+	"opus":   {"libopus"},
+	"flac":   {"flac"},
+	"vorbis": {"libvorbis"},
+	"alac":   {"alac"},
 	// video
-	"h264": "libx264",
-	"hevc": "libx265",
-	"av1":  "libsvtav1",
-	"vp9":  "libvpx-vp9",
+	"h264": {"libx264"},
+	"hevc": {"libx265"},
+	"av1":  {"libsvtav1", "libaom-av1"},
+	"vp9":  {"libvpx-vp9"},
 	// subtitles
-	"subrip":   "srt",
-	"ass":      "ass",
-	"mov_text": "mov_text",
-	"webvtt":   "webvtt",
+	"subrip":   {"srt"},
+	"ass":      {"ass"},
+	"mov_text": {"mov_text"},
+	"webvtt":   {"webvtt"},
 }
 
-// Encoder returns the ffmpeg encoder for a target codec.
+// Encoder returns mediator's preferred ffmpeg encoder for a target codec,
+// regardless of what is installed; Toolchain.Encoder checks availability.
 func Encoder(codec string) (string, bool) {
-	e, ok := encoders[codec]
-	return e, ok
+	if e := encoders[codec]; len(e) > 0 {
+		return e[0], true
+	}
+	return "", false
 }
 
 // textSubtitles are the subtitle codecs that are plain text and can therefore

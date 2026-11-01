@@ -23,12 +23,16 @@ var probeCmd = &console.Command{
 		if err != nil {
 			return err
 		}
+		tc, err := detectToolchain(c, cfg)
+		if err != nil {
+			return err
+		}
 		f := c.Args().Get("file")
-		info, err := media.Probe(context.Background(), cfg.FFprobe, f)
+		info, err := media.Probe(context.Background(), tc.FFprobe, f)
 		if err != nil {
 			return console.Exit(err.Error(), 1)
 		}
-		p, err := plan.Build(info, cfg)
+		p, err := plan.BuildFor(info, cfg, tc)
 		if err != nil {
 			return console.Exit(err.Error(), 1)
 		}
@@ -39,7 +43,7 @@ var probeCmd = &console.Command{
 			return nil
 		}
 		if terminal.IsVerbose() {
-			fmt.Fprintf(c.App.Writer, "\n%s", cfg.FFmpeg)
+			fmt.Fprintf(c.App.Writer, "\n%s", quote(tc.FFmpeg))
 			for _, a := range transcode.Args(p, transcode.TempPath(out)) {
 				fmt.Fprintf(c.App.Writer, " %s", quote(a))
 			}

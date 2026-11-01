@@ -34,10 +34,16 @@ Config lookup: `--config`, then `./mediator.yaml`, then
   the progress line.
 - `config/`: `mediator.yaml` schema, normalization (codec aliases) and
   validation.
-- `media/`: ffprobe JSON parsing (`probe.go`); codec aliases, encoders and
-  container capabilities (`codecs.go`).
-- `plan/`: the decision engine. It is pure (probe data + config in, plan out)
-  and must stay free of I/O, so it is unit-tested without ffmpeg.
+- `media/`: ffprobe JSON parsing (`probe.go`); codec aliases, candidate
+  encoders and container capabilities (`codecs.go`); detecting the installed
+  ffmpeg's version, encoders and muxers (`toolchain.go`); language codes
+  (`lang.go`).
+- `commands/doctor.go`: `mediator doctor` and the compatibility check every
+  `run` prints before starting.
+- `plan/`: the decision engine. It is pure (probe data + config + toolchain
+  in, plan out) and must stay free of I/O, so it is unit-tested without
+  ffmpeg. `BuildFor` plans for a detected toolchain; `Build` (nil toolchain)
+  assumes every encoder exists.
 - `transcode/`: plan -> ffmpeg arguments, execution with `-progress` parsing,
   verification by re-probing, and installing the output. The caller passes
   the output path (`Execute(ctx, plan, out, opts)`) and whether to remove the

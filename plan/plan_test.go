@@ -296,3 +296,47 @@ func TestKeptDefaultIsLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildForUsesInstalledEncoders(t *testing.T) {
+	c := cfg(t, `video: {preferred: [h264, hevc]}`)
+	info := &media.Info{Path: "/x/a.mkv", Streams: []media.Stream{video(0, "mpeg4")}}
+
+	// No libx264: the next preferred codec is used.
+	tc := media.NewToolchain("9.0", []string{"libx265"}, []string{"matroska"})
+	p, err := BuildFor(info, c, tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Streams[0]; s.Codec != "hevc" || s.Encoder != "libx265" {
+		t.Errorf("got %s via %s, want hevc via libx265", s.Codec, s.Encoder)
+	}
+
+	// Neither: the stream is kept as-is with a warning, since mkv holds it.
+	p, err = BuildFor(info, c, media.NewToolchain("9.0", nil, []string{"matroska"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Streams[0].Action != Copy || len(p.Warnings) != 1 {
+		t.Errorf("no encoder: action %s, warnings %v", p.Streams[0].Action, p.Warnings)
+	}
+	// ...but where the container can't hold it, the file fails.
+	mp4 := cfg(t, "container: {preferred: [mp4]}\nvideo: {preferred: [h264]}")
+	odd := &media.Info{Path: "/x/a.mkv", Streams: []media.Stream{video(0, "mpeg2video")}}
+	if _, err := BuildFor(odd, mp4, media.NewToolchain("9.0", nil, []string{"mp4"})); err == nil {
+		t.Errorf("expected an error: mp4 can't hold mpeg2video and nothing can convert it")
+	}
+
+	// A file that needs no conversion is fine without any encoder.
+	ok := &media.Info{Path: "/x/a.mkv", Streams: []media.Stream{video(0, "h264")}}
+	if _, err := BuildFor(ok, c, media.NewToolchain("9.0", nil, []string{"matroska"})); err != nil {
+		t.Errorf("compliant file: %v", err)
+	}
+}
+
+func TestBuildForNeedsTheMuxer(t *testing.T) {
+	c := cfg(t, `container: {preferred: [mp4]}`)
+	info := &media.Info{Path: "/x/a.mkv", Streams: []media.Stream{video(0, "h264")}}
+	if _, err := BuildFor(info, c, media.NewToolchain("9.0", nil, []string{"matroska"})); err == nil || !strings.Contains(err.Error(), "cannot write mp4") {
+		t.Errorf("err = %v", err)
+	}
+}

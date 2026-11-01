@@ -62,6 +62,21 @@ Dry run, nothing was changed. Use --ack to convert.
 `mediator probe <file>` shows the plan for one file. Add `-v` to also see the
 exact `ffmpeg` command it would run.
 
+`mediator doctor` checks the installed ffmpeg against your config:
+
+```
+ffmpeg     9.0.2-full_build-www.gyan.dev  C:\...\ffmpeg.exe
+ffprobe    9.0.2-full_build-www.gyan.dev  C:\...\ffprobe.exe
+config     C:\Users\you\AppData\Roaming\mediator\mediator.yaml
+
+container  mkv ✓   mp4 ✓
+video      h264 ✓ libx264   hevc ✓ libx265
+audio      aac ✓ aac   mp3 ✓ libmp3lame
+subtitles  subrip ✓ srt   ass ✓ ass   hdmv_pgs_subtitle (copy only)
+
+ffmpeg can do everything this config asks for.
+```
+
 ### Configuration
 
 Mediator uses the first config file it finds:
@@ -178,8 +193,27 @@ succeeded or not.
   macOS `._` files on NAS shares.
 
 ### Requirements
-`ffmpeg` and `ffprobe` on `PATH`, or set in the config. Builds are native for
-Linux, Windows and macOS (amd64/arm64), via goreleaser.
+`ffmpeg` and `ffprobe` on `PATH`, or set in the config (`ffmpeg:`,
+`ffprobe:`). Builds are native for Linux, Windows and macOS (amd64/arm64),
+via goreleaser.
+
+ffmpeg builds differ in which encoders they include, so mediator checks the
+installed one rather than its version alone:
+
+- Every `run` and `probe` starts by asking ffmpeg for its version, encoders
+  and output formats. If ffmpeg or ffprobe is missing, mediator says how to
+  install it for your OS. Problems that affect your config are printed
+  before the first file.
+- A preferred codec this ffmpeg has no encoder for is skipped in favour of
+  the next one in the list: with `video: {preferred: [h264, hevc]}` and no
+  `libx264`, video is converted to HEVC instead. With none available, a
+  stream is kept as-is when its container can hold it.
+- A preferred container this ffmpeg can't write makes the files that need
+  it fail, and `mediator doctor` exits with 1.
+- Mediator is tested with ffmpeg 8.1 and 9.0. Older or unparseable (git
+  snapshot) versions get a warning but are not refused.
+- Watch out for Fedora's default `ffmpeg-free`: it has no x264/x265
+  encoders. Install `ffmpeg` from RPM Fusion instead.
 
 ### Development
 

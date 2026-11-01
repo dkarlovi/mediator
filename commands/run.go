@@ -23,7 +23,7 @@ import (
 
 // Commands returns every mediator command.
 func Commands() []*console.Command {
-	return []*console.Command{runCmd, probeCmd}
+	return []*console.Command{runCmd, probeCmd, doctorCmd}
 }
 
 func loadConfig(c *console.Context) (*config.Config, error) {
@@ -60,6 +60,13 @@ Paths can be files or directories, local or on a network share:
 		if err != nil {
 			return err
 		}
+		tc, err := detectToolchain(c, cfg)
+		if err != nil {
+			return err
+		}
+		_, issues := compatibility(cfg, tc)
+		printIssues(c.App.ErrWriter, issues)
+
 		paths := c.Args().Tail()
 		if len(paths) == 0 {
 			paths = cfg.Paths
@@ -106,13 +113,13 @@ Paths can be files or directories, local or on a network share:
 			if ctx.Err() != nil {
 				break
 			}
-			info, err := media.Probe(ctx, cfg.FFprobe, f)
+			info, err := media.Probe(ctx, tc.FFprobe, f)
 			if err != nil {
 				reportError(c, f, err)
 				failed++
 				continue
 			}
-			p, err := plan.Build(info, cfg)
+			p, err := plan.BuildFor(info, cfg, tc)
 			if err != nil {
 				reportError(c, f, err)
 				failed++
@@ -155,8 +162,8 @@ Paths can be files or directories, local or on a network share:
 			}
 
 			res, err := transcode.Execute(ctx, p, out, transcode.Options{
-				FFmpeg:       cfg.FFmpeg,
-				FFprobe:      cfg.FFprobe,
+				FFmpeg:       tc.FFmpeg,
+				FFprobe:      tc.FFprobe,
 				RemoveSource: cfg.Original == config.OriginalDelete,
 				WorkDir:      workDir,
 				Progress:     progressPrinter(c.App.Writer, interactive, n+1, len(files)),

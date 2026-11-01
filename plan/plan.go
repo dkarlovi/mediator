@@ -57,6 +57,8 @@ type Plan struct {
 	Dst      media.Container
 	Streams  []StreamPlan
 	Warnings []string
+	// tc is the ffmpeg the plan is for; nil assumes every encoder exists.
+	tc *media.Toolchain
 }
 
 // NeedsWork reports whether the file has to be rewritten at all.
@@ -86,8 +88,15 @@ func (p *Plan) Kept() []StreamPlan {
 // maxChannels caps encoders that cannot produce more channels than this.
 var maxChannels = map[string]int{"mp3": 2, "ac3": 6, "eac3": 6, "aac": 8, "opus": 8}
 
-// Build decides what has to happen to a probed file.
+// Build decides what has to happen to a probed file, assuming an ffmpeg with
+// every encoder mediator knows. Use BuildFor to plan for the installed one.
 func Build(info *media.Info, cfg *config.Config) (*Plan, error) {
+	return BuildFor(info, cfg, nil)
+}
+
+// BuildFor decides what has to happen to a probed file with the given ffmpeg:
+// a preferred codec it has no encoder for is skipped in favour of the next.
+func BuildFor(info *media.Info, cfg *config.Config, tc *media.Toolchain) (*Plan, error) {
 	src, ok := media.ContainerOf(info.Path)
 	if !ok {
 		return nil, fmt.Errorf("unsupported container %q", filepath.Ext(info.Path))
@@ -97,11 +106,16 @@ func Build(info *media.Info, cfg *config.Config) (*Plan, error) {
 		dst, _ = media.LookupContainer(prefs[0])
 	}
 
+	if !tc.HasMuxer(dst.Muxer) {
+		return nil, fmt.Errorf("this ffmpeg cannot write %s files (no %q muxer)", dst.Name, dst.Muxer)
+	}
+
 	p := &Plan{
 		Info:   info,
 		Source: info.Path,
 		Src:    src,
 		Dst:    dst,
+		tc:     tc,
 	}
 
 	// A language filter must never leave a file silent: if none of the audio
@@ -224,7 +238,7 @@ func (p *Plan) choose(s media.Stream, cfg config.StreamConfig) (StreamPlan, erro
 	}
 
 	convertible := func(target string) bool {
-		if _, ok := media.Encoder(target); !ok || !dst.Allows(kind, target) {
+		if _, ok := p.tc.Encoder(target); !ok || !dst.Allows(kind, target) {
 			return false
 		}
 		// Bitmap subtitles can only be copied; text ones only become text.
@@ -258,7 +272,7 @@ func (p *Plan) choose(s media.Stream, cfg config.StreamConfig) (StreamPlan, erro
 }
 
 func (p *Plan) convert(s media.Stream, target string, cc config.ConvertConfig, reason string) StreamPlan {
-	enc, _ := media.Encoder(target)
+	enc, _ := p.tc.Encoder(target)
 	sp := StreamPlan{Stream: s, Action: Convert, Codec: target, Encoder: enc, Reason: reason}
 
 	switch s.CodecType {
@@ -308,6 +322,7 @@ func videoOptions(enc string, cc config.ConvertConfig) []Option {
 		"libx264":    {20, "medium"},
 		"libx265":    {22, "medium"},
 		"libsvtav1":  {30, "6"},
+		"libaom-av1": {30, ""},
 		"libvpx-vp9": {31, ""},
 	}[enc]
 	crf, preset := d.crf, d.preset
@@ -327,7 +342,8 @@ func videoOptions(enc string, cc config.ConvertConfig) []Option {
 	if crf > 0 {
 		opts = append(opts, Option{"crf", strconv.Itoa(crf)})
 	}
-	if enc == "libvpx-vp9" {
+	if enc == "libvpx-vp9" || enc == "libaom-av1" {
+		// Both treat -crf as a cap on a target bitrate unless that is 0.
 		opts = append(opts, Option{"b", "0"})
 	}
 	return opts
