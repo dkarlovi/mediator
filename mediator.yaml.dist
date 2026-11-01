@@ -25,6 +25,10 @@ audio:
   convert:
     bitrate: 192k     # default: 64k per output channel
     channels: 2       # downmix surround to stereo; omit to keep the source layout
+  # Keep only audio tracks in these languages (eng, en, ger/deu/de all work).
+  # Untagged tracks are always kept, and a file never loses all its audio:
+  # if none of its tracks match, all are kept. Omit to keep every language.
+  # languages: [eng]
 
 subtitles:
   # Text subtitles can be converted between each other. Bitmap ones (PGS,
@@ -33,6 +37,9 @@ subtitles:
   # Unlisted bitmap subtitles are kept with a warning when the container
   # allows it, dropped otherwise.
   preferred: [srt, ass, pgs]
+  # Keep only subtitles in these languages; same rules as audio, except a
+  # file may end up with no subtitles at all.
+  # languages: [eng]
 
 # What happens to the source once the converted file is written and verified:
 #   keep   - leave it untouched; the converted file is written beside it as

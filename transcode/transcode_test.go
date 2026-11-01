@@ -200,6 +200,43 @@ audio: {preferred: [aac]}
 			t.Errorf("source must be untouched and no output left")
 		}
 	})
+	t.Run("dropping languages moves the default track", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "Film.mkv")
+		gen := exec.Command("ffmpeg", "-v", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+			"-f", "lavfi", "-i", "sine=f=440:duration=2",
+			"-map", "0", "-map", "1", "-map", "1", "-map", "1",
+			"-c:v", "libx264", "-c:a", "aac",
+			"-metadata:s:a:0", "language=spa", "-metadata:s:a:1", "language=eng", "-metadata:s:a:2", "language=fre",
+			"-disposition:a:0", "default", "-disposition:a:1", "0", "-disposition:a:2", "0", src)
+		if out, err := gen.CombinedOutput(); err != nil {
+			t.Fatalf("generating sample: %v\n%s", err, out)
+		}
+		lc := mustConfig(t, "audio: {preferred: [aac], languages: [eng]}")
+		info, err := media.Probe(context.Background(), lc.FFprobe, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := plan.Build(info, lc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(filepath.Dir(src), "Film-out.mkv")
+		if _, err := Execute(context.Background(), p, out, Options{FFmpeg: lc.FFmpeg, FFprobe: lc.FFprobe}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := media.Probe(context.Background(), lc.FFprobe, out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Streams) != 2 {
+			t.Fatalf("want video + 1 audio, got %d streams", len(res.Streams))
+		}
+		a := res.Streams[1]
+		if a.Language() != "eng" || a.Disposition["default"] != 1 {
+			t.Errorf("kept audio: language %q, default %d", a.Language(), a.Disposition["default"])
+		}
+	})
 	t.Run("into a new directory elsewhere", func(t *testing.T) {
 		// What a caller with its own target layout (fileferry) would do.
 		src, p := sample(t)

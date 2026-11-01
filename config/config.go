@@ -60,6 +60,11 @@ type StreamConfig struct {
 	// alone".
 	Preferred []string      `yaml:"preferred"`
 	Convert   ConvertConfig `yaml:"convert"`
+	// Languages keeps only tracks in these languages (audio and subtitles
+	// only). Tracks without a language tag are always kept, and a file never
+	// loses all its audio: when none of its audio tracks match, all of them
+	// are kept. Empty keeps every language.
+	Languages []string `yaml:"languages,omitempty"`
 }
 
 // Config is the contents of mediator.yaml.
@@ -80,6 +85,8 @@ type Config struct {
 }
 
 var bitrateRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[kKmM]?$`)
+
+var languageRe = regexp.MustCompile(`^[a-z]{2,3}$`)
 
 // Normalize canonicalizes codec and container names, fills defaults and
 // validates the config.
@@ -108,6 +115,16 @@ func (c *Config) Normalize() error {
 		}
 		if s.cfg.Convert.Channels < 0 {
 			return fmt.Errorf("%s.convert.channels: must be positive", s.name)
+		}
+		if len(s.cfg.Languages) > 0 && s.name == "video" {
+			return fmt.Errorf("video.languages: languages apply to audio and subtitles only")
+		}
+		for i, l := range s.cfg.Languages {
+			code := media.Language(l)
+			if !languageRe.MatchString(code) {
+				return fmt.Errorf("%s.languages: %q is not a language code like eng or en", s.name, l)
+			}
+			s.cfg.Languages[i] = code
 		}
 	}
 	switch c.Original {

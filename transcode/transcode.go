@@ -68,6 +68,9 @@ func Args(p *plan.Plan, out string) []string {
 				args = append(args, "-"+opt.Name+":"+o, opt.Value)
 			}
 		}
+		if s.MakeDefault {
+			args = append(args, "-disposition:"+o, "+default")
+		}
 		hevc := s.Stream.CodecName == "hevc" && s.Action == plan.Copy || s.Codec == "hevc"
 		if p.Dst.HvcTag && s.Stream.CodecType == "video" && hevc {
 			args = append(args, "-tag:"+o, "hvc1")

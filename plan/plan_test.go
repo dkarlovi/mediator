@@ -221,3 +221,78 @@ func TestListedBitmapSubtitlesAreKeptQuietly(t *testing.T) {
 		t.Errorf("listed: actions = %q, warnings = %v", got, p.Warnings)
 	}
 }
+
+func lang(s media.Stream, l string) media.Stream {
+	s.Tags = map[string]string{"language": l}
+	return s
+}
+
+func TestLanguages(t *testing.T) {
+	c := cfg(t, `
+audio: {preferred: [aac], languages: [en]}
+subtitles: {preferred: [srt], languages: [eng, de]}
+`)
+	def := lang(audio(1, "truehd", 8), "spa")
+	def.Disposition = map[string]int{"default": 1}
+	p, err := Build(&media.Info{Path: "/x/a.mkv", Streams: []media.Stream{
+		video(0, "h264"),
+		def,                             // default track, wrong language: dropped
+		lang(audio(2, "ac3", 6), "eng"), // "en" in config matches "eng"
+		lang(audio(3, "ac3", 6), "fre"),
+		audio(4, "aac", 2),            // untagged: kept
+		lang(sub(5, "subrip"), "ger"), // "de" matches the bibliographic "ger"
+		lang(sub(6, "subrip"), "deu"), // ...and the terminologic "deu"
+		lang(sub(7, "subrip"), "ita"),
+		lang(sub(8, "subrip"), "und"), // undetermined: kept
+	}}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := actions(p), "copy drop convert:aac drop copy copy copy drop copy"; got != want {
+		t.Errorf("actions = %q, want %q", got, want)
+	}
+	if !p.Streams[2].MakeDefault {
+		t.Errorf("first kept audio should become the default after the default was dropped")
+	}
+	for i, s := range p.Streams {
+		if i != 2 && s.MakeDefault {
+			t.Errorf("stream %d unexpectedly made default", i)
+		}
+	}
+	if !strings.Contains(p.Streams[1].Reason, "language spa") {
+		t.Errorf("reason = %q", p.Streams[1].Reason)
+	}
+}
+
+func TestLanguagesNeverLeaveAFileSilent(t *testing.T) {
+	c := cfg(t, `audio: {languages: [eng]}`)
+	p, err := Build(&media.Info{Path: "/x/a.mkv", Streams: []media.Stream{
+		video(0, "h264"), lang(audio(1, "aac", 2), "jpn"), lang(audio(2, "aac", 6), "jpn"),
+	}}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(p); got != "copy copy copy" || p.NeedsWork() {
+		t.Errorf("actions = %q", got)
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "keeping all audio") {
+		t.Errorf("warnings = %v", p.Warnings)
+	}
+}
+
+func TestKeptDefaultIsLeftAlone(t *testing.T) {
+	c := cfg(t, `audio: {languages: [eng]}`)
+	eng := lang(audio(2, "aac", 2), "eng")
+	eng.Disposition = map[string]int{"default": 1}
+	p, err := Build(&media.Info{Path: "/x/a.mkv", Streams: []media.Stream{
+		video(0, "h264"), lang(audio(1, "aac", 2), "spa"), eng,
+	}}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range p.Streams {
+		if s.MakeDefault {
+			t.Errorf("default was kept, nothing should be re-flagged")
+		}
+	}
+}

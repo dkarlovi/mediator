@@ -115,6 +115,13 @@ becomes AAC. Leave a list out and that kind of stream is never touched.
 - **Subtitles.** Text formats (SRT, ASS, WebVTT, mov_text) convert into each
   other. Bitmap formats would need OCR, so they are kept when the container
   allows it, with a warning.
+- **`languages`** (audio and subtitles) keeps only tracks in the listed
+  languages and drops the rest, e.g. `audio: {languages: [eng]}`. Codes are
+  normalized, so `en`, `eng` and both forms of `ger`/`deu`, `fre`/`fra` and
+  `dut`/`nld` match each other. Tracks without a language tag are always kept.
+  A file never loses all its audio: if none of its audio tracks match, all
+  are kept, with a warning. If the default audio track is dropped, the first
+  remaining one becomes the default.
 - **`convert` settings** apply only to streams that are actually converted.
   `channels: 2` downmixes a converted 7.1 TrueHD track, but leaves a 5.1 AAC
   track alone, because it's already acceptable. Mono is never upmixed.

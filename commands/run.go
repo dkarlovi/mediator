@@ -217,9 +217,13 @@ func printPlan(w io.Writer, p *plan.Plan, out, indent string) {
 	for _, s := range p.Streams {
 		label := fmt.Sprintf("%s #%d", streamKind(s.Stream), s.Stream.Index)
 		desc := describe(s.Stream)
+		note := ""
+		if s.MakeDefault {
+			note = " <fg=yellow>(becomes default)</>"
+		}
 		switch s.Action {
 		case plan.Copy:
-			fmt.Fprintf(w, "%s%-11s %-28s keep\n", in, label, desc)
+			fmt.Fprintf(w, "%s%-11s %-28s keep%s\n", in, label, desc, note)
 		case plan.Convert:
 			target := s.Codec
 			if s.Channels > 0 {
@@ -230,7 +234,7 @@ func printPlan(w io.Writer, p *plan.Plan, out, indent string) {
 					target += " @ " + o.Value
 				}
 			}
-			fmt.Fprintf(w, "%s%-11s %-28s <fg=yellow>-> %s</>\n", in, label, desc, target)
+			fmt.Fprintf(w, "%s%-11s %-28s <fg=yellow>-> %s</>%s\n", in, label, desc, target, note)
 		case plan.Drop:
 			fmt.Fprintf(w, "%s%-11s %-28s <fg=red>drop</> (%s)\n", in, label, desc, s.Reason)
 		}

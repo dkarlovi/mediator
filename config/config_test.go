@@ -42,6 +42,8 @@ func TestParseErrors(t *testing.T) {
 		``:                                       "", // empty config is valid, does nothing
 		`audio: {convert: {channels: -1}}`:       "must be positive",
 		`video: {preferred: [mpeg2video, h264]}`: "cannot encode",
+		`video: {languages: [eng]}`:              "audio and subtitles only",
+		`audio: {languages: [english]}`:          "not a language code",
 	} {
 		_, err := Parse([]byte(yaml))
 		switch {
@@ -107,5 +109,18 @@ func TestWorkDirIsExpandedAndAbsolute(t *testing.T) {
 	want, _ := filepath.Abs(filepath.Join("scratch", "mediator"))
 	if c.WorkDir != want {
 		t.Errorf("workdir = %q, want %q", c.WorkDir, want)
+	}
+}
+
+func TestLanguagesAreCanonicalized(t *testing.T) {
+	c, err := Parse([]byte("audio: {languages: [EN, ger, fra]}\nsubtitles: {languages: [hr]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"eng", "deu", "fra"}; !reflect.DeepEqual(c.Audio.Languages, want) {
+		t.Errorf("audio = %v", c.Audio.Languages)
+	}
+	if want := []string{"hrv"}; !reflect.DeepEqual(c.Subtitles.Languages, want) {
+		t.Errorf("subtitles = %v", c.Subtitles.Languages)
 	}
 }

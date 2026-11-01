@@ -44,6 +44,9 @@ type StreamPlan struct {
 	Channels int
 	// Reason explains a convert or drop decision.
 	Reason string
+	// MakeDefault marks this stream as the default track of its kind, set
+	// when the source's default audio track is dropped.
+	MakeDefault bool
 }
 
 // Plan is everything that will happen to one file.
@@ -101,18 +104,73 @@ func Build(info *media.Info, cfg *config.Config) (*Plan, error) {
 		Dst:    dst,
 	}
 
+	// A language filter must never leave a file silent: if none of the audio
+	// tracks would survive it, keep them all.
+	keepAudio := cfg.Audio.Languages
+	if len(keepAudio) > 0 && !slices.ContainsFunc(info.Streams, func(s media.Stream) bool {
+		return s.CodecType == "audio" && wantedLanguage(s, keepAudio)
+	}) {
+		if slices.ContainsFunc(info.Streams, func(s media.Stream) bool { return s.CodecType == "audio" }) {
+			p.warnf("no audio track is in %v; keeping all audio tracks", keepAudio)
+		}
+		keepAudio = nil
+	}
+
 	for _, s := range info.Streams {
-		sp, err := p.planStream(s, cfg)
+		var sp StreamPlan
+		var err error
+		switch {
+		case s.CodecType == "audio" && !wantedLanguage(s, keepAudio):
+			sp = StreamPlan{Stream: s, Action: Drop, Reason: fmt.Sprintf("language %s not in %v", s.Language(), keepAudio)}
+		case s.CodecType == "subtitle" && !wantedLanguage(s, cfg.Subtitles.Languages):
+			sp = StreamPlan{Stream: s, Action: Drop, Reason: fmt.Sprintf("language %s not in %v", s.Language(), cfg.Subtitles.Languages)}
+		default:
+			sp, err = p.planStream(s, cfg)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("stream #%d (%s %s): %w", s.Index, s.CodecType, s.CodecName, err)
 		}
 		p.Streams = append(p.Streams, sp)
 	}
+	p.keepDefaultAudio()
 
 	if len(p.Kept()) == 0 {
 		return nil, fmt.Errorf("no streams would be left in the output")
 	}
 	return p, nil
+}
+
+// wantedLanguage reports whether a stream passes a language filter. An empty
+// filter passes everything, and so does a stream without a language tag:
+// there is no telling what it is.
+func wantedLanguage(s media.Stream, languages []string) bool {
+	lang := media.Language(s.Language())
+	return len(languages) == 0 || lang == "" || slices.Contains(languages, lang)
+}
+
+// keepDefaultAudio makes the first kept audio track the default when the
+// source's default audio track was dropped, so players don't have to guess.
+func (p *Plan) keepDefaultAudio() {
+	first := -1
+	for i, s := range p.Streams {
+		if s.Stream.CodecType != "audio" {
+			continue
+		}
+		if s.Action != Drop {
+			if s.Stream.Disposition["default"] == 1 {
+				return
+			}
+			if first < 0 {
+				first = i
+			}
+		}
+	}
+	droppedDefault := slices.ContainsFunc(p.Streams, func(s StreamPlan) bool {
+		return s.Action == Drop && s.Stream.CodecType == "audio" && s.Stream.Disposition["default"] == 1
+	})
+	if first >= 0 && droppedDefault {
+		p.Streams[first].MakeDefault = true
+	}
 }
 
 func (p *Plan) warnf(format string, args ...any) {

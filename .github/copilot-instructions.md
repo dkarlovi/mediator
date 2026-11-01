@@ -60,5 +60,7 @@ Config lookup: `--config`, then `./mediator.yaml`, then
   the source is left untouched.
 - `original: keep` (default) writes `<name>-mediator.<ext>` beside the source;
   `original: delete` replaces the source only after the output is in place.
+- `languages` drops audio/subtitle tracks in other languages, but never
+  untagged tracks, and never all audio tracks of a file.
 - Runs are idempotent: a converted file, or a source whose `-mediator` copy
   exists, is not converted again.
