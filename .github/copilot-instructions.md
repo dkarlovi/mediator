@@ -71,5 +71,8 @@ Config lookup: `--config`, then `./mediator.yaml`, then
   `original: delete` replaces the source only after the output is in place.
 - `languages` drops audio/subtitle tracks in other languages, but never
   untagged tracks, and never all audio tracks of a file.
+- With `original: delete`, an existing `-mediator` copy is installed
+  (`transcode.Adopt`, after `Verify` against the current plan) instead of
+  converting again; one that no longer matches is reconverted and removed.
 - Runs are idempotent: a converted file, or a source whose `-mediator` copy
   exists, is not converted again.

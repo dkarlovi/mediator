@@ -255,6 +255,46 @@ func Execute(ctx context.Context, p *plan.Plan, out string, opts Options) (res R
 // work directory on another volume takes.
 var renameFile = os.Rename
 
+// Verify checks that an existing file is what executing the plan would
+// produce: every planned stream, in the planned codec, with the source's
+// duration.
+func Verify(ctx context.Context, ffprobe string, p *plan.Plan, path string) error {
+	return verify(ctx, ffprobe, p, path)
+}
+
+// Adopt installs a file converted earlier (by a run that kept the original
+// beside it) at out, instead of converting the source again. The file must
+// pass Verify against the current plan. Like Execute, it never overwrites a
+// file other than the source, and removes the source only once the output is
+// in place.
+func Adopt(ctx context.Context, p *plan.Plan, converted, out string, opts Options) (res Result, err error) {
+	started := time.Now()
+	if err := Verify(ctx, opts.FFprobe, p, converted); err != nil {
+		return res, fmt.Errorf("%s does not match the current config: %w", filepath.Base(converted), err)
+	}
+	if out != p.Source && exists(out) {
+		return res, fmt.Errorf("output %s already exists", out)
+	}
+	if fi, err := os.Stat(p.Source); err == nil {
+		res.OldSize = fi.Size()
+	}
+	if fi, err := os.Stat(converted); err == nil {
+		res.NewSize = fi.Size()
+	}
+	if err := os.Rename(converted, out); err != nil {
+		return res, fmt.Errorf("installing %s: %w", filepath.Base(converted), err)
+	}
+	res.Output = out
+	res.Took = time.Since(started)
+	if out != p.Source && opts.RemoveSource {
+		if err := os.Remove(p.Source); err != nil {
+			return res, fmt.Errorf("output installed as %s, but removing the source failed: %w", out, err)
+		}
+		res.Deleted = true
+	}
+	return res, nil
+}
+
 // workFile reserves a unique file in the work directory for out, so two runs
 // (or two files with the same name from different folders) never collide.
 func workFile(dir, out string) (string, error) {

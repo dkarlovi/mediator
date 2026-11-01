@@ -347,3 +347,84 @@ func TestCopyWithProgress(t *testing.T) {
 		t.Errorf("canceled copy: err = %v", err)
 	}
 }
+
+func TestAdopt(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	c := mustConfig(t, "audio: {preferred: [aac]}\noriginal: delete")
+	gen := func(t *testing.T, path, audio string) {
+		t.Helper()
+		cmd := exec.Command("ffmpeg", "-v", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+			"-f", "lavfi", "-i", "sine=f=440:duration=2",
+			"-c:v", "libx264", "-c:a", audio, path)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("generating %s: %v\n%s", path, err, out)
+		}
+	}
+	planFor := func(t *testing.T, src string) *plan.Plan {
+		t.Helper()
+		info, err := media.Probe(context.Background(), c.FFprobe, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := plan.Build(info, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	opts := Options{FFprobe: c.FFprobe, RemoveSource: true}
+
+	t.Run("replaces the source in place", func(t *testing.T) {
+		dir := t.TempDir()
+		src, conv := filepath.Join(dir, "Movie.mkv"), filepath.Join(dir, "Movie-mediator.mkv")
+		gen(t, src, "eac3")
+		gen(t, conv, "aac")
+		res, err := Adopt(context.Background(), planFor(t, src), conv, src, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Output != src || exists(conv) {
+			t.Errorf("result %+v, converted file still there: %v", res, exists(conv))
+		}
+		info, _ := media.Probe(context.Background(), c.FFprobe, src)
+		if info.Streams[1].CodecName != "aac" {
+			t.Errorf("source not replaced: %s", info.Streams[1].CodecName)
+		}
+	})
+	t.Run("rejects a file that doesn't match the plan", func(t *testing.T) {
+		dir := t.TempDir()
+		src, conv := filepath.Join(dir, "Movie.mkv"), filepath.Join(dir, "Movie-mediator.mkv")
+		gen(t, src, "eac3")
+		gen(t, conv, "ac3") // not what the config produces
+		if _, err := Adopt(context.Background(), planFor(t, src), conv, src, opts); err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Errorf("err = %v", err)
+		}
+		if !exists(src) || !exists(conv) {
+			t.Errorf("both files must be left alone")
+		}
+	})
+	t.Run("never overwrites another file", func(t *testing.T) {
+		dir := t.TempDir()
+		src, conv, out := filepath.Join(dir, "Old.avi"), filepath.Join(dir, "Old-mediator.mkv"), filepath.Join(dir, "Old.mkv")
+		gen(t, src, "ac3")
+		gen(t, conv, "aac")
+		if err := os.WriteFile(out, []byte("someone else's"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mkv := mustConfig(t, "container: {preferred: [mkv]}\naudio: {preferred: [aac]}")
+		info, _ := media.Probe(context.Background(), c.FFprobe, src)
+		p, err := plan.Build(info, mkv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Adopt(context.Background(), p, conv, out, opts); err == nil || !strings.Contains(err.Error(), "already exists") {
+			t.Errorf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(out); string(b) != "someone else's" || !exists(src) || !exists(conv) {
+			t.Errorf("files were touched")
+		}
+	})
+}

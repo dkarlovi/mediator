@@ -45,7 +45,8 @@ subtitles:
 #   keep   - leave it untouched; the converted file is written beside it as
 #            "<name>-mediator.<ext>" (default)
 #   delete - replace it: the converted file takes its name and the source is
-#            removed
+#            removed. Switching from keep to delete installs the existing
+#            "-mediator" copies instead of converting again.
 original: keep
 
 # Local directory to convert in when your files are on a network share.

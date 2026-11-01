@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 
 	"github.com/dkarlovi/mediator/media"
 	"gopkg.in/yaml.v3"
@@ -201,14 +202,18 @@ func userConfigDir() (string, error) {
 //     ~/.config/mediator/mediator.yaml on Linux and other Unixes;
 //     %AppData%\mediator\mediator.yaml on Windows;
 //     ~/Library/Application Support/mediator/mediator.yaml on macOS.
+//
+// The returned path is always absolute, so it can be copied from any output
+// that shows it (doctor, -v, errors) and used from anywhere.
 func LoadPrefer(explicit string) (*Config, string, error) {
 	if explicit != "" {
-		cfg, err := Load(explicit)
-		return cfg, explicit, err
+		p := absPath(explicit)
+		cfg, err := Load(p)
+		return cfg, p, err
 	}
-	candidates := []string{FileName}
+	candidates := []string{absPath(FileName)}
 	if dir, err := userConfigDir(); err == nil {
-		candidates = append(candidates, filepath.Join(dir, "mediator", FileName))
+		candidates = append(candidates, absPath(filepath.Join(dir, "mediator", FileName)))
 	}
 	for _, p := range candidates {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
@@ -216,5 +221,14 @@ func LoadPrefer(explicit string) (*Config, string, error) {
 			return cfg, p, err
 		}
 	}
-	return nil, "", fmt.Errorf("no config file found (tried: %v)", candidates)
+	return nil, "", fmt.Errorf("no config file found (tried: %s)", strings.Join(candidates, ", "))
+}
+
+// absPath makes a path absolute, leaving it as given if that fails (only
+// when the working directory itself is gone).
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }

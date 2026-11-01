@@ -100,7 +100,13 @@ Paths can be files or directories, local or on a network share:
 		defer stop()
 
 		interactive := terminal.IsTerminal(os.Stdout)
-		var ok, converted, todo, done, failed int
+		var ok, converted, adopted, todo, done, failed int
+		// With original: delete, a "-mediator" copy left by an earlier keep
+		// run is handled together with its source, not as a file of its own.
+		stems := map[string]bool{}
+		for _, f := range files {
+			stems[strings.TrimSuffix(f, filepath.Ext(f))] = true
+		}
 		var saved int64
 		dir := ""
 		header := func(f string) {
@@ -112,6 +118,10 @@ Paths can be files or directories, local or on a network share:
 		for n, f := range files {
 			if ctx.Err() != nil {
 				break
+			}
+			if stem := strings.TrimSuffix(f, filepath.Ext(f)); cfg.Original == config.OriginalDelete &&
+				strings.HasSuffix(stem, suffix) && stems[strings.TrimSuffix(stem, suffix)] {
+				continue
 			}
 			info, err := media.Probe(ctx, tc.FFprobe, f)
 			if err != nil {
@@ -146,8 +156,45 @@ Paths can be files or directories, local or on a network share:
 					continue
 				}
 			}
+			// With original: delete, a "-mediator" copy from an earlier keep run
+			// is installed instead of converting again, if it still matches
+			// the config. One that doesn't is replaced by a fresh conversion.
+			stale, staleWhy := "", error(nil)
+			if sib := outputPath(p, config.OriginalKeep); cfg.Original == config.OriginalDelete && sib != p.Source {
+				if _, err := os.Stat(sib); err == nil {
+					header(f)
+					verr := transcode.Verify(ctx, tc.FFprobe, p, sib)
+					if verr == nil {
+						adopted++
+						if !ack {
+							fmt.Fprintf(c.App.Writer, "  <info>%s</>: already converted as %s; would install it as %s\n", filepath.Base(f), filepath.Base(sib), filepath.Base(out))
+							continue
+						}
+						res, err := transcode.Adopt(ctx, p, sib, out, transcode.Options{FFprobe: tc.FFprobe, RemoveSource: true})
+						if err != nil {
+							adopted--
+							reportError(c, f, err)
+							failed++
+							continue
+						}
+						msg := fmt.Sprintf("  <info>%s</>: installed earlier conversion %s as %s", filepath.Base(f), filepath.Base(sib), filepath.Base(res.Output))
+						switch {
+						case res.Output == p.Source:
+							msg += ", replacing the original"
+						case res.Deleted:
+							msg += ", original deleted"
+						}
+						fmt.Fprintln(c.App.Writer, msg)
+						continue
+					}
+					stale, staleWhy = sib, verr
+				}
+			}
 			header(f)
 			printPlan(c.App.Writer, p, out, "  ")
+			if stale != "" {
+				fmt.Fprintf(c.App.Writer, "    <fg=yellow>! %s doesn't match the current config (%v); converting again and removing it afterwards</>\n", filepath.Base(stale), staleWhy)
+			}
 			if err := transcode.Preflight(p, out); err != nil {
 				reportError(c, f, err)
 				failed++
@@ -186,19 +233,34 @@ Paths can be files or directories, local or on a network share:
 			if res.Deleted {
 				msg += ", original deleted"
 			}
+			if stale != "" {
+				if err := os.Remove(stale); err != nil {
+					reportError(c, stale, fmt.Errorf("removing outdated conversion: %w", err))
+				} else {
+					msg += ", outdated " + filepath.Base(stale) + " removed"
+				}
+			}
 			fmt.Fprintln(c.App.Writer, msg)
 		}
 
 		fmt.Fprintln(c.App.Writer, "\n"+strings.Repeat("-", 40))
 		if ack {
-			fmt.Fprintf(c.App.Writer, "Converted: <info>%d</>  Already OK: %d  Converted earlier: %d  Errors: %d", done, ok, converted, failed)
+			fmt.Fprintf(c.App.Writer, "Converted: <info>%d</>  Already OK: %d  Converted earlier: %d", done, ok, converted)
+			if adopted > 0 {
+				fmt.Fprintf(c.App.Writer, "  Earlier conversions installed: %d", adopted)
+			}
+			fmt.Fprintf(c.App.Writer, "  Errors: %d", failed)
 			if done > 0 {
 				fmt.Fprintf(c.App.Writer, "  Size change: %s", signedSize(-saved))
 			}
 			fmt.Fprintln(c.App.Writer)
 		} else {
-			fmt.Fprintf(c.App.Writer, "Would convert: <info>%d</>  Already OK: %d  Converted earlier: %d  Errors: %d\n", todo, ok, converted, failed)
-			if todo > 0 {
+			fmt.Fprintf(c.App.Writer, "Would convert: <info>%d</>  Already OK: %d  Converted earlier: %d", todo, ok, converted)
+			if adopted > 0 {
+				fmt.Fprintf(c.App.Writer, "  Would install earlier conversions: %d", adopted)
+			}
+			fmt.Fprintf(c.App.Writer, "  Errors: %d\n", failed)
+			if todo > 0 || adopted > 0 {
 				fmt.Fprintln(c.App.Writer, "Dry run, nothing was changed. Use <info>--ack</> to convert.")
 			}
 		}

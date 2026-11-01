@@ -75,7 +75,8 @@ func TestLoadPreferLookupOrder(t *testing.T) {
 	homeCfg := write(filepath.Join(home, ".config", "mediator", FileName))
 	xdgCfg := write(filepath.Join(xdg, "mediator", FileName))
 	t.Setenv("HOME", home)
-	t.Chdir(t.TempDir()) // no ./mediator.yaml
+	cwd := t.TempDir()
+	t.Chdir(cwd) // no ./mediator.yaml
 
 	for _, tt := range []struct{ xdg, want string }{
 		{xdg, xdgCfg},
@@ -92,11 +93,25 @@ func TestLoadPreferLookupOrder(t *testing.T) {
 	// ./mediator.yaml beats the user config dir, --config beats both.
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	write(FileName)
-	if _, got, _ := LoadPrefer(""); got != FileName {
-		t.Errorf("cwd config not preferred: %q", got)
+	// Paths come back absolute, even for ./mediator.yaml and a relative --config.
+	if _, got, _ := LoadPrefer(""); got != filepath.Join(cwd, FileName) {
+		t.Errorf("cwd config not preferred, or not absolute: %q", got)
 	}
 	if _, got, _ := LoadPrefer(homeCfg); got != homeCfg {
 		t.Errorf("explicit config not preferred: %q", got)
+	}
+	if _, got, _ := LoadPrefer(FileName); got != filepath.Join(cwd, FileName) {
+		t.Errorf("relative --config not made absolute: %q", got)
+	}
+
+	// The error lists every place it looked, as absolute paths.
+	if err := os.Remove(FileName); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "empty"))
+	_, _, err := LoadPrefer("")
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(cwd, FileName)) || !strings.Contains(err.Error(), filepath.Join(root, "empty", "mediator", FileName)) {
+		t.Errorf("err = %v", err)
 	}
 }
 

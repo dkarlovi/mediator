@@ -124,6 +124,12 @@ becomes AAC. Leave a list out and that kind of stream is never touched.
   source's name (with the new extension if the container changed) and removes
   the source. A file that already ends in `-mediator` is mediator's own output,
   so it is converted in place instead of getting a second suffix.
+- **Switching from `keep` to `delete`** doesn't convert anything again. A
+  source that already has a `-mediator` copy gets that copy installed in its
+  place (a rename, so seconds, not minutes), after the copy is re-probed to
+  check it still matches the current config. A copy that no longer matches,
+  for example one made before you added `languages`, is replaced by a fresh
+  conversion and removed. The dry run shows which files get which.
 - **Container limits win.** If the target is `mp4`, SRT subtitles become
   `mov_text`, the only text format MP4 holds. Bitmap subtitles (PGS, VobSub)
   and font attachments are dropped, and the dry run says so.
