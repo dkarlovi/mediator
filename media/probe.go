@@ -23,6 +23,7 @@ type Stream struct {
 	Channels      int               `json:"channels"`
 	ChannelLayout string            `json:"channel_layout"`
 	BitRate       string            `json:"bit_rate"`
+	RawDuration   string            `json:"duration"`
 	Tags          map[string]string `json:"tags"`
 	Disposition   map[string]int    `json:"disposition"`
 }
@@ -33,6 +34,38 @@ func (s Stream) Language() string {
 		return l
 	}
 	return ""
+}
+
+// Duration returns the stream's own duration in seconds, or 0 when unknown.
+// MP4 stores it per stream; Matroska as a DURATION tag ("01:41:52.600000000"),
+// which mkvmerge and ffmpeg write for every track.
+func (s Stream) Duration() float64 {
+	if d, err := strconv.ParseFloat(s.RawDuration, 64); err == nil && d > 0 {
+		return d
+	}
+	for k, v := range s.Tags {
+		if strings.EqualFold(k, "DURATION") || strings.HasPrefix(strings.ToUpper(k), "DURATION-") {
+			if d := parseClock(v); d > 0 {
+				return d
+			}
+		}
+	}
+	return 0
+}
+
+// parseClock parses "HH:MM:SS.fraction" into seconds, or returns 0.
+func parseClock(v string) float64 {
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	sec, err3 := strconv.ParseFloat(parts[2], 64)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return 0
+	}
+	return float64(h*3600+m*60) + sec
 }
 
 // Title returns the stream's title tag.

@@ -428,3 +428,114 @@ func TestAdopt(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifyDuration(t *testing.T) {
+	dur := func(d string) map[string]string { return map[string]string{"DURATION": d, "language": "eng"} }
+	ger := map[string]string{"DURATION": "00:01:00.000000000", "language": "ger"}
+	src := &media.Info{Path: "/x/Movie.mkv", Format: media.Format{Duration: "60.0"}, Streams: []media.Stream{
+		{Index: 0, CodecType: "video", CodecName: "h264", Tags: dur("00:00:20.000000000")},
+		{Index: 1, CodecType: "audio", CodecName: "ac3", Channels: 6, Tags: dur("00:00:20.001000000")},
+		{Index: 2, CodecType: "audio", CodecName: "ac3", Channels: 6, Tags: ger}, // dropped, runs 60 s
+	}}
+	p, err := plan.Build(src, mustConfig(t, "audio: {preferred: [aac], languages: [eng]}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := func(format, video, audio string) *media.Info {
+		return &media.Info{Format: media.Format{Duration: format}, Streams: []media.Stream{
+			{CodecType: "video", CodecName: "h264", Tags: dur(video)},
+			{CodecType: "audio", CodecName: "aac", Tags: dur(audio)},
+		}}
+	}
+
+	// The longer dropped track must not make a correct output look short.
+	if err := verifyDuration(p, out("20.045", "00:00:20.000000000", "00:00:20.045000000")); err != nil {
+		t.Errorf("correct output rejected: %v", err)
+	}
+	// A truncated output is still caught, per stream...
+	if err := verifyDuration(p, out("10.0", "00:00:10.000000000", "00:00:10.000000000")); err == nil {
+		t.Errorf("truncated output accepted")
+	}
+	// ...and at file level when the output's streams carry no durations.
+	bare := out("10.0", "", "")
+	if err := verifyDuration(p, bare); err == nil {
+		t.Errorf("truncated output without stream durations accepted")
+	}
+
+	// Without any per-stream durations, the file durations are compared.
+	noTags := &media.Info{Path: "/x/a.mkv", Format: media.Format{Duration: "60.0"}, Streams: []media.Stream{{Index: 0, CodecType: "video", CodecName: "h264"}}}
+	p2, _ := plan.Build(noTags, mustConfig(t, ""))
+	if err := verifyDuration(p2, &media.Info{Format: media.Format{Duration: "60.5"}, Streams: []media.Stream{{CodecType: "video", CodecName: "h264"}}}); err != nil {
+		t.Errorf("fallback: %v", err)
+	}
+	if err := verifyDuration(p2, &media.Info{Format: media.Format{Duration: "30.0"}, Streams: []media.Stream{{CodecType: "video", CodecName: "h264"}}}); err == nil {
+		t.Errorf("fallback: truncated output accepted")
+	}
+}
+
+// TestFailedVerificationNeverTouchesTheSource is the original: delete
+// guarantee: when the output fails verification, the source survives byte for
+// byte and nothing is left behind, whether the output would have replaced the
+// source in place or been installed under a new name.
+func TestFailedVerificationNeverTouchesTheSource(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	for _, tt := range []struct {
+		name, src, out, container string
+	}{
+		{"replace in place", "Movie.mkv", "Movie.mkv", "mkv"},
+		{"new name", "Old.avi", "Old.mkv", "mkv"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, tt.src)
+			gen := exec.Command("ffmpeg", "-v", "error",
+				"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+				"-f", "lavfi", "-i", "sine=f=440:duration=2",
+				"-c:v", "libx264", "-c:a", "ac3", src)
+			if out, err := gen.CombinedOutput(); err != nil {
+				t.Fatalf("generating sample: %v\n%s", err, out)
+			}
+			before, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := mustConfig(t, "container: {preferred: ["+tt.container+"]}\naudio: {preferred: [aac]}\noriginal: delete")
+			info, err := media.Probe(context.Background(), c.FFprobe, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := plan.Build(info, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Make the source claim to be an hour long, so the (correct)
+			// 2-second output fails verification.
+			// MP4/AVI report it in the duration field, Matroska as a tag.
+			for i := range p.Streams {
+				p.Streams[i].Stream.RawDuration = "3600"
+				p.Streams[i].Stream.Tags = map[string]string{"DURATION": "01:00:00.000000000"}
+			}
+
+			out := filepath.Join(dir, tt.out)
+			_, err = Execute(context.Background(), p, out, Options{FFmpeg: c.FFmpeg, FFprobe: c.FFprobe, RemoveSource: true})
+			if err == nil || !strings.Contains(err.Error(), "verifying output") {
+				t.Fatalf("expected a verification failure, got %v", err)
+			}
+			after, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatalf("source gone: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Errorf("source changed")
+			}
+			if out != src && exists(out) {
+				t.Errorf("output installed despite failing verification")
+			}
+			if left, _ := os.ReadDir(dir); len(left) != 1 {
+				t.Errorf("left behind: %v", left)
+			}
+		})
+	}
+}

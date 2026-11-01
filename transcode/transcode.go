@@ -485,12 +485,40 @@ func verify(ctx context.Context, ffprobe string, p *plan.Plan, out string) error
 			return fmt.Errorf("stream #%d: expected %s, found %s", i, wantCodec, got)
 		}
 	}
-	if src, dst := p.Info.Duration(), info.Duration(); src > 0 {
-		if diff := math.Abs(src - dst); diff > math.Max(2, src*0.01) {
-			return fmt.Errorf("duration %.1fs differs from source %.1fs", dst, src)
+	return verifyDuration(p, info)
+}
+
+// verifyDuration checks the output runs as long as the source streams it
+// keeps. A source file is as long as its longest stream, and that may be one
+// the plan drops (a dub or subtitle track running past the credits), so the
+// file's duration is only a fallback for when no stream reports its own.
+func verifyDuration(p *plan.Plan, out *media.Info) error {
+	tolerance := func(d float64) float64 { return math.Max(2, d*0.01) }
+	want := 0.0
+	for i, s := range p.Kept() {
+		if !timed(s.Stream) {
+			continue
+		}
+		src, dst := s.Stream.Duration(), out.Streams[i].Duration()
+		want = math.Max(want, src)
+		if src > 0 && dst > 0 && math.Abs(src-dst) > tolerance(src) {
+			return fmt.Errorf("stream #%d: duration %.1fs differs from source %.1fs", i, dst, src)
 		}
 	}
+	if want == 0 {
+		want = p.Info.Duration()
+	}
+	if got := out.Duration(); want > 0 && math.Abs(want-got) > tolerance(want) {
+		return fmt.Errorf("duration %.1fs differs from the kept source streams' %.1fs", got, want)
+	}
 	return nil
+}
+
+// timed reports whether a stream's duration says something about the file's:
+// audio and video do; cover art, attachments and subtitles (whose last cue
+// can end anywhere) don't.
+func timed(s media.Stream) bool {
+	return (s.CodecType == "video" && !s.IsCoverArt()) || s.CodecType == "audio"
 }
 
 func lastLines(s string, n int) string {
