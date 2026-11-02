@@ -1,11 +1,11 @@
 module github.com/dkarlovi/mediator
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/symfony-cli/console v1.2.4
 	github.com/symfony-cli/terminal v1.0.9
-	golang.org/x/sys v0.21.0
+	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
