@@ -5,7 +5,7 @@ FROM mwader/static-ffmpeg:9.0.2-1 AS ffmpeg
 
 # Cross-compile on the build machine's own architecture: Go needs no emulation
 # to produce a static binary for another one.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-trixie AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
